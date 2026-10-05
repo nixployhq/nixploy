@@ -90,7 +90,7 @@ let
       && defaults.git.privateKeyFile == null
       && defaults.git.knownHostsFile == null
       && defaults.environment == { };
-    example = valid (import ../examples/configuration.nix).services.nixploy.apps;
+    example = valid (import ../examples/nixos/configuration.nix { }).services.nixploy.apps;
     sshUrl = valid {
       demo = sshApp // {
         repository = "ssh://git@example.com/team/app.git";

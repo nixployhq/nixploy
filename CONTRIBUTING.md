@@ -2,25 +2,9 @@
 
 ## Demo
 
-The public [Topcoat demo](https://github.com/nixployhq/demo) is a small app whose
-home page displays its deployed Git revision. To run it in a long-lived NixOS VM
-on an x86_64 Linux machine with KVM:
-
-```sh
-nix build --impure --out-link demo-vm --expr 'import ./examples/demo-vm.nix {
-  repository = "https://github.com/nixployhq/demo.git";
-}'
-mkdir -p demo-state
-cd demo-state
-../demo-vm/bin/run-nixploy-demo-vm
-```
-
-Open http://127.0.0.1:8080 after the initial build. The VM polls `main` every
-15 seconds after each completed attempt. Edit `src/main.rs` in the demo repo,
-commit, and push to test an update. The VM disk persists in `demo-state`.
-Run the launcher under a service manager to keep it running after logout.
-The demo binds to localhost by default. Set `hostAddress` and `hostPort` to
-choose a different listening address and port.
+See [examples/nixos](examples/nixos) for a standalone infrastructure flake
+that deploys the public Topcoat demo in a persistent NixOS VM. It includes
+build/run instructions and guidance for adapting it to a host.
 
 ## Checks
 
@@ -30,7 +14,7 @@ cargo test
 cargo fmt --all -- --check
 cargo clippy --all-targets -- -D warnings
 nix flake check path:.
-nix run path:.#formatter.aarch64-darwin -- flake.nix nix/*.nix nix/modules/*.nix tests/*.nix examples/*.nix
+nix run path:.#formatter.aarch64-darwin -- flake.nix nix/*.nix nix/modules/*.nix tests/*.nix examples/nixos/*.nix
 ```
 
 The `worker` check builds the Rust package and runs its unit tests.

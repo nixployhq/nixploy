@@ -47,6 +47,10 @@ For your own app, set `repository` and `executable`. The repository must commit
 a `flake.lock` and expose `packages.<system>.<package>` with an `out` output
 containing `bin/<executable>`. The package defaults to `default`.
 
+For a complete infrastructure flake with a runnable NixOS VM, see
+[examples/nixos](examples/nixos). It imports Nixploy from GitHub and includes
+a lockfile.
+
 ## App options
 
 Options live under `services.nixploy.apps.<name>`.
@@ -89,7 +93,7 @@ systemd and enforces host verification. If `privateKeyFile` is null, SSH
 credentials must already be available to the worker. These settings authenticate
 the application repository; private flake inputs need separate authentication.
 
-See [examples/configuration.nix](examples/configuration.nix) for a configuration
+See [examples/nixos/configuration.nix](examples/nixos/configuration.nix) for a configuration
 with explicit defaults.
 
 ## Application data and secrets
