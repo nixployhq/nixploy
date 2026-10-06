@@ -7,9 +7,13 @@ struct Fake {
     resolve_failure: bool,
     build_failure: bool,
     restart_failure: bool,
+    restart_results: std::collections::VecDeque<bool>,
+    stops: usize,
+    stop_failure: bool,
     builds: Vec<String>,
     restarts: usize,
     change_during_build: Option<(PathBuf, Config)>,
+    change_during_restart: Option<(PathBuf, Config)>,
 }
 
 impl Backend for Fake {
@@ -36,7 +40,18 @@ impl Backend for Fake {
     }
     fn restart(&mut self, _: &str) -> Result<()> {
         self.restarts += 1;
-        ensure!(!self.restart_failure, "restart failed");
+        if let Some((path, cfg)) = self.change_during_restart.take() {
+            fs::write(path, serde_json::to_vec(&cfg)?)?;
+        }
+        ensure!(
+            !self.restart_failure && self.restart_results.pop_front().unwrap_or(true),
+            "restart failed"
+        );
+        Ok(())
+    }
+    fn stop(&mut self, _: &str) -> Result<()> {
+        self.stops += 1;
+        ensure!(!self.stop_failure, "stop failed");
         Ok(())
     }
 }
@@ -60,6 +75,7 @@ impl Fixture {
             system: "x86_64-linux".into(),
             state_directory: temp.path().join("state"),
             generation: "1".into(),
+            rollback: false,
         };
         let path = temp.path().join("config.json");
         fs::write(&path, serde_json::to_vec(&config).unwrap()).unwrap();
@@ -75,9 +91,13 @@ impl Fixture {
                 resolve_failure: false,
                 build_failure: false,
                 restart_failure: false,
+                restart_results: Default::default(),
+                stops: 0,
+                stop_failure: false,
                 builds: vec![],
                 restarts: 0,
                 change_during_build: None,
+                change_during_restart: None,
             },
         }
     }
@@ -94,6 +114,10 @@ impl Fixture {
         self.fake.revision = "b".repeat(40);
         self.fake.output = self._temp.path().join("package-two");
         package(&self.fake.output);
+    }
+    fn enable_rollback(&mut self) {
+        self.config.rollback = true;
+        fs::write(&self.path, serde_json::to_vec(&self.config).unwrap()).unwrap();
     }
 }
 
@@ -259,4 +283,189 @@ fn invalid_executable_is_rejected_before_effects() {
     f.config.executable = "../escape".into();
     assert!(f.run().is_err());
     assert!(f.fake.builds.is_empty());
+}
+
+#[test]
+fn failed_activation_rolls_back_and_suppresses_repeated_polls_until_explicit_retry() {
+    let mut f = Fixture::new();
+    f.enable_rollback();
+    f.run().unwrap();
+    let previous = f.profile();
+    f.next();
+    f.fake.restart_results.extend([false, true]);
+    assert!(f.run().is_err());
+    assert_eq!(f.profile(), previous);
+    assert_eq!(f.state().active.unwrap().revision, "a".repeat(40));
+    assert!(f.state().pending.is_none());
+    assert!(f.state().recovery.is_none());
+    assert_eq!(f.state().failed.unwrap().revision, "b".repeat(40));
+    assert_eq!(f.fake.stops, 1);
+    assert_eq!(
+        fs::read_dir(f.config.state_directory.join("roots"))
+            .unwrap()
+            .count(),
+        2
+    );
+    let restarts = f.fake.restarts;
+    f.run().unwrap();
+    f.run().unwrap();
+    assert_eq!(f.fake.restarts, restarts);
+    assert_eq!(f.fake.builds.len(), 2);
+    request_retry(&f.config, &f.path).unwrap();
+    f.run().unwrap();
+    assert_eq!(f.profile(), f.fake.output);
+    assert!(f.state().failed.is_none());
+    assert_eq!(f.fake.builds.len(), 2);
+}
+
+#[test]
+fn first_release_failure_stops_and_deselects_package_and_retry_works_offline() {
+    let mut f = Fixture::new();
+    f.enable_rollback();
+    f.fake.restart_results.push_back(false);
+    assert!(f.run().is_err());
+    assert!(f.state().active.is_none());
+    assert!(f.state().pending.is_none());
+    assert!(f.state().failed.is_some());
+    assert!(!f.config.state_directory.join("profile").exists());
+    f.fake.revision = "a".repeat(40);
+    f.run().unwrap();
+    assert_eq!(f.fake.restarts, 1);
+    request_retry(&f.config, &f.path).unwrap();
+    f.fake.resolve_failure = true;
+    f.run().unwrap();
+    assert!(f.state().failed.is_none());
+    assert!(f.state().active.is_some());
+    assert_eq!(f.fake.builds.len(), 1);
+}
+
+#[test]
+fn failed_rollback_is_durable_and_recovers_without_git() {
+    let mut f = Fixture::new();
+    f.enable_rollback();
+    f.run().unwrap();
+    let previous = f.profile();
+    f.next();
+    f.fake.restart_failure = true;
+    assert!(f.run().is_err());
+    assert!(f.state().recovery.is_some());
+    assert_eq!(f.profile(), previous);
+    assert!(request_retry(&f.config, &f.path).is_err());
+    f.fake.restart_failure = false;
+    f.fake.resolve_failure = true;
+    // Git lookup still reports its outage, but recovery has already completed.
+    assert!(f.run().is_err());
+    assert!(f.state().recovery.is_none());
+    assert_eq!(f.profile(), previous);
+    assert_eq!(f.fake.restarts, 4);
+    assert_eq!(f.fake.builds.len(), 2);
+}
+
+#[test]
+fn stopped_worker_before_rollback_switch_recovers_on_next_run() {
+    let mut f = Fixture::new();
+    f.enable_rollback();
+    f.run().unwrap();
+    let previous = f.profile();
+    f.next();
+    f.fake.restart_results.push_back(false);
+    f.fake.stop_failure = true;
+    assert!(f.run().is_err());
+    assert!(f.state().recovery.is_some());
+    assert_eq!(f.profile(), f.fake.output);
+    f.fake.stop_failure = false;
+    f.run().unwrap();
+    assert_eq!(f.profile(), previous);
+    assert!(f.state().recovery.is_none());
+    assert_eq!(f.fake.builds.len(), 2);
+}
+
+#[test]
+fn newer_commit_can_supersede_even_a_failed_rollback() {
+    let mut f = Fixture::new();
+    f.enable_rollback();
+    f.run().unwrap();
+    f.next();
+    f.fake.restart_failure = true;
+    assert!(f.run().is_err());
+    f.fake.restart_failure = false;
+    f.fake.restart_results.extend([false, true]);
+    f.fake.revision = "c".repeat(40);
+    f.fake.output = f._temp.path().join("package-three");
+    package(&f.fake.output);
+    f.run().unwrap();
+    assert!(f.state().recovery.is_none());
+    assert_eq!(f.state().active.unwrap().revision, "c".repeat(40));
+    assert_eq!(f.profile(), f.fake.output);
+}
+
+#[test]
+fn configuration_change_allows_failed_revision_again() {
+    let mut f = Fixture::new();
+    f.enable_rollback();
+    f.fake.restart_results.push_back(false);
+    assert!(f.run().is_err());
+    f.config.generation = "new-config".into();
+    fs::write(&f.path, serde_json::to_vec(&f.config).unwrap()).unwrap();
+    f.fake.revision = "a".repeat(40);
+    f.run().unwrap();
+    assert_eq!(f.state().active.unwrap().configuration, f.config);
+    assert_eq!(f.fake.builds.len(), 2);
+}
+
+#[test]
+fn old_state_without_rollback_fields_remains_readable() {
+    let mut f = Fixture::new();
+    f.run().unwrap();
+    let mut state = serde_json::to_value(f.state()).unwrap();
+    state.as_object_mut().unwrap().remove("failed");
+    state.as_object_mut().unwrap().remove("recovery");
+    state["active"]["configuration"]
+        .as_object_mut()
+        .unwrap()
+        .remove("rollback");
+    fs::write(
+        f.config.state_directory.join("state.json"),
+        serde_json::to_vec(&state).unwrap(),
+    )
+    .unwrap();
+    assert!(!f.state().active.unwrap().configuration.rollback);
+    assert!(f.state().recovery.is_none());
+    assert!(f.state().failed.is_none());
+}
+
+#[test]
+fn configuration_changed_during_failed_start_prevents_stale_rollback() {
+    let mut f = Fixture::new();
+    f.enable_rollback();
+    f.run().unwrap();
+    f.next();
+    let mut changed = f.config.clone();
+    changed.generation = "new-generation".into();
+    f.fake.change_during_restart = Some((f.path.clone(), changed));
+    f.fake.restart_results.push_back(false);
+    assert!(f.run().is_err());
+    assert_eq!(f.fake.stops, 0);
+    assert!(f.state().failed.is_none());
+    assert!(f.state().recovery.is_none());
+    assert!(f.state().pending.is_some());
+}
+
+#[test]
+fn configuration_change_supersedes_old_recovery_before_starting_any_old_service() {
+    let mut f = Fixture::new();
+    f.enable_rollback();
+    f.run().unwrap();
+    f.next();
+    f.fake.restart_failure = true;
+    assert!(f.run().is_err());
+    assert!(f.state().recovery.is_some());
+    let stops = f.fake.stops;
+    f.config.generation = "new-generation".into();
+    fs::write(&f.path, serde_json::to_vec(&f.config).unwrap()).unwrap();
+    f.fake.restart_failure = false;
+    f.run().unwrap();
+    assert_eq!(f.fake.stops, stops);
+    assert!(f.state().recovery.is_none());
+    assert_eq!(f.state().active.unwrap().configuration, f.config);
 }

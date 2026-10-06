@@ -127,7 +127,9 @@ let
         url = "http://127.0.0.1:3000/health";
         expectedStatus = 200;
         timeoutSeconds = 30;
-        intervalSeconds = 1;
+        intervalSeconds = 2;
+        startPeriodSeconds = 10;
+        failureThreshold = 3;
         requestTimeoutSeconds = 5;
       };
     readinessUnit =
@@ -185,10 +187,25 @@ let
           { intervalSeconds = 0; }
           { requestTimeoutSeconds = 0; }
           { expectedStatus = 600; }
+          { startPeriodSeconds = -1; }
+          { startPeriodSeconds = 30; }
+          { failureThreshold = 0; }
         ];
     readinessChangesGeneration =
       (builtins.fromJSON readinessRuntime.environment.etc."nixploy/demo.json".text).generation
       != (builtins.fromJSON endpointRuntime.environment.etc."nixploy/demo.json".text).generation;
+    rollbackDefaults =
+      !defaults.rollback.enable
+      && readinessRuntime.services.nixploy.apps.demo.rollback.enable
+      && (builtins.fromJSON readinessRuntime.environment.etc."nixploy/demo.json".text).rollback;
+    rollbackCanBeDisabled =
+      !(evaluate {
+        demo = publicApp // {
+          endpoint.port = 3000;
+          readiness.path = "/health";
+          rollback.enable = false;
+        };
+      }).services.nixploy.apps.demo.rollback.enable;
     endpointConsumer =
       proxyConfig.services.cloudflared.tunnels.demo.ingress."foo.example.com" == "http://127.0.0.1:3000"
       && proxyConfig.services.nixploy.apps.demo.environment.PORT == "3000";

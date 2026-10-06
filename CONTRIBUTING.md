@@ -41,6 +41,16 @@ rejection, request and overall timeouts, and readiness gating on manual restarts
 nix build path:.#checks.x86_64-linux.readiness -L
 ```
 
+The `rollback` check verifies the startup grace period and failure threshold,
+restoration and readiness of the previous package, failed revision suppression
+across reboot, GC protection, explicit retry, and recovery without Git access.
+Rust tests also cover interrupted and failed rollback, first deployment failures,
+configuration changes, and superseding failed recovery with a new commit.
+
+```sh
+nix build path:.#checks.x86_64-linux.rollback -L
+```
+
 The `secret-providers` check imports pinned sops-nix and agenix modules. It
 creates test identities and encrypted data inside the VM, then verifies Git
 credentials, application environment files, permissions, and rotation through

@@ -158,9 +158,19 @@ let
                   default = 30;
                   description = "Total time allowed for the startup probe, including requests and retry delays.";
                 };
+                startPeriodSeconds = mkOption {
+                  type = types.ints.between 0 119;
+                  default = 10;
+                  description = "Startup grace period within the overall deadline. Failures of probes started during this period do not count; success completes readiness immediately.";
+                };
+                failureThreshold = mkOption {
+                  type = types.ints.between 1 100;
+                  default = 3;
+                  description = "Consecutive failed probes after the grace period that fail startup. One successful probe completes readiness.";
+                };
                 intervalSeconds = mkOption {
                   type = types.ints.between 1 60;
-                  default = 1;
+                  default = 2;
                   description = "Delay between failed probe attempts, in seconds.";
                 };
                 requestTimeoutSeconds = mkOption {
@@ -172,6 +182,12 @@ let
             }
           )
         );
+      };
+      rollback.enable = mkOption {
+        type = types.bool;
+        default = config.readiness != null;
+        defaultText = lib.literalExpression "readiness != null";
+        description = "Restore the last successful package when activation fails and suppress automatic retries of the failed revision/configuration. Current NixOS service settings and application data are not rolled back.";
       };
       environment = mkOption {
         type = types.attrsOf types.str;
@@ -227,6 +243,13 @@ in
       {
         assertion = lib.all (matches "[A-Za-z_][A-Za-z0-9_]*") (builtins.attrNames app.environment);
         message = "services.nixploy.apps.${name}.environment contains an invalid environment variable name.";
+      }
+      {
+        assertion =
+          !app.enable
+          || app.readiness == null
+          || app.readiness.startPeriodSeconds < app.readiness.timeoutSeconds;
+        message = "services.nixploy.apps.${name}.readiness.startPeriodSeconds must be less than timeoutSeconds.";
       }
     ]) config.services.nixploy.apps
   );

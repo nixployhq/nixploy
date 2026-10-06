@@ -1,4 +1,7 @@
-{ pkgs }:
+{
+  pkgs,
+  rollback ? false,
+}:
 let
   fixtureFlake = pkgs.writeText "readiness-flake.nix" ''
     {
@@ -23,11 +26,17 @@ let
     from pathlib import Path
     import time
 
+    BROKEN = False
+
     class Handler(http.server.BaseHTTPRequestHandler):
         def do_GET(self):
             with open("/var/lib/readiness/requests", "a") as log:
                 log.write(self.path + "\n")
             mode = Path("/var/lib/readiness/mode").read_text().strip()
+            if BROKEN and mode != "repair":
+                mode = "unhealthy"
+            elif mode == "repair":
+                mode = "ready"
             if mode == "hang":
                 time.sleep(30)
             status = 204 if mode == "ready" or self.path == "/ok" else 503
@@ -47,10 +56,11 @@ let
   '';
 in
 pkgs.testers.runNixOSTest {
-  name = "nixploy-readiness";
+  name = if rollback then "nixploy-rollback" else "nixploy-readiness";
   nodes.machine = { lib, ... }: {
     imports = [ ../nix/modules/nixploy.nix ];
     virtualisation.memorySize = 2048;
+    virtualisation.writableStoreUseTmpfs = false;
     environment.systemPackages = [
       pkgs.git
       pkgs.jq
@@ -71,10 +81,12 @@ pkgs.testers.runNixOSTest {
       readiness = {
         path = "/health";
         expectedStatus = 204;
-        timeoutSeconds = 8;
+        timeoutSeconds = if rollback then 12 else 8;
+        startPeriodSeconds = if rollback then 3 else 0;
         intervalSeconds = 1;
         requestTimeoutSeconds = 2;
       };
+      rollback.enable = rollback;
       # The probe must contact the app directly despite inherited proxy settings.
       environment.http_proxy = "http://127.0.0.1:9";
     };
@@ -114,50 +126,56 @@ pkgs.testers.runNixOSTest {
     machine.wait_until_succeeds("jq -e '.active != null and .pending == null' /var/lib/nixploy/demo/state.json")
     machine.wait_for_unit("nixploy-app-demo.service")
     first = state()["active"]
+  ''
+  + (
+    if rollback then
+      builtins.readFile ./rollback.py
+    else
+      ''
+        # No continuous probes once startup has completed.
+        machine.succeed("echo unhealthy > /var/lib/readiness/mode")
+        requests = machine.succeed("cat /var/lib/readiness/requests")
+        time.sleep(2)
+        assert requests == machine.succeed("cat /var/lib/readiness/requests")
+        machine.succeed("systemctl is-active nixploy-app-demo")
 
-    # No continuous probes once startup has completed.
-    machine.succeed("echo unhealthy > /var/lib/readiness/mode")
-    requests = machine.succeed("cat /var/lib/readiness/requests")
-    time.sleep(2)
-    assert requests == machine.succeed("cat /var/lib/readiness/requests")
-    machine.succeed("systemctl is-active nixploy-app-demo")
+        # A new revision that never becomes ready remains pending; the old release stays rooted.
+        machine.succeed("echo '# second revision' >> /srv/app/server; git -C /srv/app commit -am second")
+        started = time.monotonic()
+        machine.fail("systemctl start nixploy-update-demo.service")
+        assert time.monotonic() - started < 30
+        machine.succeed("systemctl stop nixploy-app-demo.service")
+        failed = state()
+        assert failed["active"] == first
+        assert failed["pending"] is not None
+        assert failed["pending"]["output"] != first["output"]
+        selected = machine.succeed("readlink /var/lib/nixploy/demo/profile").strip()
+        assert selected == failed["pending"]["output"]
+        machine.succeed("test $(find /var/lib/nixploy/demo/roots -type l | wc -l) -eq 2")
+        machine.succeed("journalctl -u nixploy-app-demo | grep 'readiness probe failed'")
 
-    # A new revision that never becomes ready remains pending; the old release stays rooted.
-    machine.succeed("echo '# second revision' >> /srv/app/server; git -C /srv/app commit -am second")
-    started = time.monotonic()
-    machine.fail("systemctl start nixploy-update-demo.service")
-    assert time.monotonic() - started < 30
-    machine.succeed("systemctl stop nixploy-app-demo.service")
-    failed = state()
-    assert failed["active"] == first
-    assert failed["pending"] is not None
-    assert failed["pending"]["output"] != first["output"]
-    selected = machine.succeed("readlink /var/lib/nixploy/demo/profile").strip()
-    assert selected == failed["pending"]["output"]
-    machine.succeed("test $(find /var/lib/nixploy/demo/roots -type l | wc -l) -eq 2")
-    machine.succeed("journalctl -u nixploy-app-demo | grep 'readiness probe failed'")
+        # Retry the existing output with Git unavailable, without a new build or commit.
+        machine.succeed("mv /srv/app /srv/offline; echo ready > /var/lib/readiness/mode")
+        machine.succeed("systemctl start nixploy-update-demo.service")
+        assert state()["pending"] is None
+        assert state()["active"]["output"] == selected
+        machine.succeed("test $(find /var/lib/nixploy/demo/roots -type l | wc -l) -eq 1")
 
-    # Retry the existing output with Git unavailable, without a new build or commit.
-    machine.succeed("mv /srv/app /srv/offline; echo ready > /var/lib/readiness/mode")
-    machine.succeed("systemctl start nixploy-update-demo.service")
-    assert state()["pending"] is None
-    assert state()["active"]["output"] == selected
-    machine.succeed("test $(find /var/lib/nixploy/demo/roots -type l | wc -l) -eq 1")
+        # Manual restarts are gated too, and redirects cannot hide an unready endpoint.
+        machine.succeed("echo redirect > /var/lib/readiness/mode; truncate -s 0 /var/lib/readiness/requests")
+        machine.fail("systemctl restart nixploy-app-demo.service")
+        machine.succeed("systemctl stop nixploy-app-demo.service")
+        assert "/ok" not in machine.succeed("cat /var/lib/readiness/requests")
 
-    # Manual restarts are gated too, and redirects cannot hide an unready endpoint.
-    machine.succeed("echo redirect > /var/lib/readiness/mode; truncate -s 0 /var/lib/readiness/requests")
-    machine.fail("systemctl restart nixploy-app-demo.service")
-    machine.succeed("systemctl stop nixploy-app-demo.service")
-    assert "/ok" not in machine.succeed("cat /var/lib/readiness/requests")
-
-    # Each hanging request is bounded, as is the entire startup window.
-    machine.succeed("echo hang > /var/lib/readiness/mode; truncate -s 0 /var/lib/readiness/requests")
-    started = time.monotonic()
-    machine.fail("systemctl restart nixploy-app-demo.service")
-    assert time.monotonic() - started < 15
-    machine.succeed("systemctl stop nixploy-app-demo.service")
-    assert len(machine.succeed("cat /var/lib/readiness/requests").splitlines()) >= 2
-    machine.succeed("echo ready > /var/lib/readiness/mode; systemctl start nixploy-app-demo.service")
-    machine.wait_for_unit("nixploy-app-demo.service")
-  '';
+        # Each hanging request is bounded, as is the entire startup window.
+        machine.succeed("echo hang > /var/lib/readiness/mode; truncate -s 0 /var/lib/readiness/requests")
+        started = time.monotonic()
+        machine.fail("systemctl restart nixploy-app-demo.service")
+        assert time.monotonic() - started < 15
+        machine.succeed("systemctl stop nixploy-app-demo.service")
+        assert len(machine.succeed("cat /var/lib/readiness/requests").splitlines()) >= 2
+        machine.succeed("echo ready > /var/lib/readiness/mode; systemctl start nixploy-app-demo.service")
+        machine.wait_for_unit("nixploy-app-demo.service")
+      ''
+  );
 }

@@ -159,7 +159,15 @@ impl Backend for SystemBackend {
             Command::new("systemctl").args(["restart", service]),
             ACTIVATION_TIMEOUT,
         )
-        .context("restarting application (activation remains pending)")?;
+        .context("restarting application")?;
+        Ok(())
+    }
+
+    fn stop(&mut self, service: &str) -> Result<()> {
+        run(
+            Command::new("systemctl").args(["stop", service]),
+            ACTIVATION_TIMEOUT,
+        )?;
         Ok(())
     }
 }

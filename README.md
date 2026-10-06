@@ -78,8 +78,11 @@ Options live under `services.nixploy.apps.<name>`.
 | `readiness.url` | Endpoint URL + path | Explicit probe URL; required without an endpoint. Overrides `path`. |
 | `readiness.expectedStatus` | `200` | Exact HTTP status required, from 100 to 599. |
 | `readiness.timeoutSeconds` | `30` | Total readiness deadline, from 1 to 120 seconds. |
-| `readiness.intervalSeconds` | `1` | Delay between failed attempts, from 1 to 60 seconds. |
+| `readiness.startPeriodSeconds` | `10` | Startup grace period, from 0 to 119 seconds; must be shorter than the total deadline. |
+| `readiness.failureThreshold` | `3` | Failed probes after the grace period that fail startup, from 1 to 100. |
+| `readiness.intervalSeconds` | `2` | Delay between failed attempts, from 1 to 60 seconds. |
 | `readiness.requestTimeoutSeconds` | `5` | Per-request timeout, from 1 to 30 seconds, bounded by the total deadline. |
+| `rollback.enable` | Enabled with readiness | Restore the last successful package after failed activation and suppress repeated attempts of the failed revision/configuration. |
 
 An empty app set is the default. There is no global enable option. App names
 start with a letter or digit and contain only letters, digits, `_`, or `-`.
@@ -140,14 +143,21 @@ services.nixploy.apps.my-app = {
     path = "/health";
     expectedStatus = 200;
     timeoutSeconds = 30;
-    intervalSeconds = 1;
+    startPeriodSeconds = 10;
+    failureThreshold = 3;
+    intervalSeconds = 2;
     requestTimeoutSeconds = 5;
   };
 };
 ```
 
 Nixploy sends GET requests to `http://127.0.0.1:3000/health` until one completes
-with the expected status or the deadline expires. To use a separate management
+with the expected status. Failures from probes started during the first 10 seconds
+do not count; success during this period completes readiness immediately. After
+the grace period, three consecutive failed probes fail startup. The 30-second
+deadline includes the grace period, requests, and retry delays and can expire
+before the failure threshold is reached. These are probe attempts within one
+startup, not three service restarts. To use a separate management
 port or an app without an endpoint, set `readiness.url` to its full HTTP(S) URL.
 Choose an address that reaches this app directly; a shared proxy could answer
 for another instance. Probe URLs are non-secret configuration stored in the Nix store.
@@ -157,12 +167,39 @@ every start, including boot and automatic restarts. Deployment becomes active
 only after the probe succeeds. HTTPS uses the system CA bundle and verifies
 certificates; redirects are not followed and proxy environment variables are ignored.
 
-A timeout fails service startup and systemd stops the new process. The deployment
-stays pending, with the previous successful release retained in state and as a GC
-root. **The previous release is not restarted automatically:** the profile still
-selects the new release. Systemd may retry the service under its restart policy;
-the next deployment update retries pending activation and records success once
-ready. This does not provide rollback or zero-downtime deployment.
+Failed readiness fails service startup. With readiness configured, automatic
+rollback is enabled by default. Nixploy restores the previous successful package,
+restarts it, and requires its startup checks to pass. The update command still
+reports failure so the failed deployment remains visible in the journal.
+
+The failed revision and configuration are recorded in `state.json` as `failed`.
+Ordinary polls skip that combination; a newer commit or a configuration change
+can deploy normally. The latest failed package remains rooted for an explicit
+retry. To retry after fixing an external dependency, run:
+
+```sh
+sudo nixploy retry /etc/nixploy/my-app.json
+sudo systemctl start nixploy-update-my-app.service
+```
+
+The first command queues a retry under the deployment lock. The regular updater
+runs it with its normal credentials, either on the next poll or when started
+with the second command. It does not change which Git branch or revision is desired.
+
+If rollback also fails, `recovery` remains recorded and the next update attempts
+recovery before fetching Git. A newer commit can supersede failed recovery. With
+no previous distinct package, Nixploy stops the failed app and removes its profile
+so it is not selected at the next boot. `active` records the last successful
+deployment; systemd reports current service health.
+
+Rollback restores only the package. It uses the **current** NixOS environment,
+secrets, service settings, and readiness probe; it does not undo application data
+or database migrations. Recovery decisions survive worker interruption and reboot.
+This is restart-based recovery, not a zero-downtime rollout.
+
+Set `rollback.enable = false;` to retain the earlier retry behavior: failed
+activation stays `pending`, and subsequent updates retry it. Without readiness,
+rollback defaults to disabled but can be enabled for process-start failures.
 
 These are startup checks, not continuous health monitoring. Without `readiness`,
 activation still requires only a successful process start. Changing readiness
@@ -262,10 +299,11 @@ network access, and reverse proxies.
   each completed attempt. Each build uses an exact Git commit.
 - Unchanged commits do not restart the app. Changes to its Nixploy configuration
   can trigger deployment of the same commit with the new settings.
-- Fetch and build failures leave the running release untouched. Failed
-  activation remains pending for retry; a newer commit can supersede it.
+- Fetch and build failures leave the running release untouched. Failed activation
+  triggers rollback when enabled; otherwise it remains pending for retry.
 - The selected release starts again after reboot. Package roots protect active
-  and pending releases from Nix garbage collection.
+  and pending releases, rollback targets, and the latest failed release from Nix
+  garbage collection.
 
 The update worker runs as root and uses the Nix daemon; applications run as
 restricted users named `nixploy-<name>`. Only configure repositories you trust
@@ -297,8 +335,8 @@ reclaim unreferenced outputs. Keep application data in its own directory.
 Nixploy is an initial MVP:
 
 - Deployment targets must run NixOS. Updates use polling; there are no webhooks.
-- Optional HTTP(S) readiness probes gate startup. There is no continuous health
-  monitoring, automatic rollback, or zero-downtime rollout.
+- Optional HTTP(S) readiness probes gate startup and enable package rollback.
+  There is no continuous health monitoring or zero-downtime rollout.
 - Repository authentication supports HTTPS tokens and SSH keys. Provider-specific
   token generation (such as GitHub Apps) and arbitrary credential helpers are
   not configured by this interface.

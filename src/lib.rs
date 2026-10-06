@@ -26,6 +26,8 @@ pub struct Config {
     pub system: String,
     pub state_directory: PathBuf,
     pub generation: String,
+    #[serde(default)]
+    pub rollback: bool,
 }
 
 impl Config {
@@ -91,6 +93,18 @@ impl Release {
 pub struct State {
     pub active: Option<Release>,
     pub pending: Option<Release>,
+    #[serde(default)]
+    pub failed: Option<Release>,
+    #[serde(default)]
+    pub recovery: Option<Recovery>,
+}
+
+/// Persist the recovery decision before changing the profile or stopping a service.
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct Recovery {
+    pub configuration: Config,
+    pub target: Option<Release>,
 }
 
 /// Effects that need external programs. Durable state and profile transitions are
@@ -101,6 +115,7 @@ pub trait Backend {
     fn build(&mut self, revision: &str) -> Result<PathBuf>;
     fn root(&mut self, output: &Path, root: &Path) -> Result<()>;
     fn restart(&mut self, service: &str) -> Result<()>;
+    fn stop(&mut self, service: &str) -> Result<()>;
 }
 
 pub fn deploy(cfg: &Config, config_path: &Path, backend: &mut impl Backend) -> Result<()> {
@@ -112,9 +127,19 @@ pub fn deploy(cfg: &Config, config_path: &Path, backend: &mut impl Backend) -> R
     fs::create_dir_all(dir.join("roots"))?;
     let mut state = load_state(dir)?;
 
+    // Finish interrupted rollback before consulting Git, including during outages.
+    let recovery_error = if state.recovery.is_some() {
+        recover(cfg, config_path, &mut state, backend).err()
+    } else {
+        None
+    };
+
     let revision = match backend.resolve() {
         Ok(revision) => revision,
         Err(error) => {
+            if let Some(error) = recovery_error {
+                return Err(error);
+            }
             // A network outage must not prevent retrying a locally built release.
             if let Some(pending) = state.pending.as_ref().filter(|p| &p.configuration == cfg) {
                 eprintln!("revision lookup failed; retrying pending activation");
@@ -128,11 +153,27 @@ pub fn deploy(cfg: &Config, config_path: &Path, backend: &mut impl Backend) -> R
         "Git returned an invalid commit ID"
     );
 
+    if state
+        .failed
+        .as_ref()
+        .is_some_and(|release| release.matches(cfg, &revision))
+    {
+        if let Some(error) = recovery_error {
+            return Err(error);
+        }
+        eprintln!(
+            "{}: revision {} previously failed; skipping (explicit retry or configuration change required)",
+            cfg.app, revision
+        );
+        return Ok(());
+    }
+
     if let Some(pending) = state.pending.as_ref().filter(|p| p.matches(cfg, &revision)) {
         return activate(cfg, config_path, pending.clone(), &mut state, backend);
     }
     if let Some(active) = state.active.as_ref().filter(|a| a.matches(cfg, &revision)) {
         if state.pending.is_none()
+            && state.recovery.is_none()
             && fs::read_link(dir.join("profile")).ok().as_ref() == Some(&active.output)
         {
             backend.root(&active.output, &release_root(dir, active)?)?;
@@ -174,6 +215,44 @@ fn activate(
 
     // /etc is updated on a NixOS switch. A superseded or removed app must not
     // activate using configuration loaded before a long build.
+    ensure_current(cfg, config_path)?;
+    state.pending = Some(release.clone());
+    state.recovery = None;
+    save_state(dir, state)?;
+    cleanup(dir, state)?;
+    switch_profile(dir, &release.output)?;
+    if let Err(error) = backend.restart(&cfg.service()) {
+        if !cfg.rollback {
+            return Err(error);
+        }
+        ensure_current(cfg, config_path)?;
+        state.failed = Some(release.clone());
+        state.pending = None;
+        state.recovery = Some(Recovery {
+            configuration: cfg.clone(),
+            // Restoring the same package cannot repair a failed startup.
+            target: state
+                .active
+                .clone()
+                .filter(|active| active.output != release.output),
+        });
+        save_state(dir, state)?;
+        recover(cfg, config_path, state, backend)
+            .context("deployment failed and recovery remains pending")?;
+        return Err(
+            error.context("deployment failed; recovery completed and failed revision suppressed")
+        );
+    }
+    ensure_current(cfg, config_path)?;
+    state.active = Some(release);
+    state.pending = None;
+    save_state(dir, state)?;
+    cleanup(dir, state)?;
+    eprintln!("{}: activation complete", cfg.app);
+    Ok(())
+}
+
+fn ensure_current(cfg: &Config, config_path: &Path) -> Result<()> {
     let current: Config = serde_json::from_slice(
         &fs::read(config_path).context("configuration was removed during update")?,
     )?;
@@ -181,17 +260,83 @@ fn activate(
         &current == cfg,
         "configuration changed during update; retry with the current configuration"
     );
-    state.pending = Some(release.clone());
-    save_state(dir, state)?;
-    cleanup(dir, state)?;
-    switch_profile(dir, &release.output)?;
-    backend.restart(&cfg.service())?;
-    state.active = Some(release);
-    state.pending = None;
-    save_state(dir, state)?;
-    cleanup(dir, state)?;
-    eprintln!("{}: activation complete", cfg.app);
     Ok(())
+}
+
+fn recover(
+    cfg: &Config,
+    config_path: &Path,
+    state: &mut State,
+    backend: &mut impl Backend,
+) -> Result<()> {
+    let recovery = state.recovery.clone().context("missing recovery state")?;
+    ensure_current(cfg, config_path)?;
+    // The NixOS configuration may have changed while a worker was stopped. Do not
+    // restore a package using a superseded runtime configuration.
+    if recovery.configuration != *cfg {
+        state.recovery = None;
+        save_state(&cfg.state_directory, state)?;
+        return Ok(());
+    }
+    let dir = &cfg.state_directory;
+    backend
+        .stop(&cfg.service())
+        .context("stopping failed application")?;
+    ensure_current(cfg, config_path)?;
+    if let Some(target) = &recovery.target {
+        let executable = target.output.join("bin").join(&cfg.executable);
+        let metadata =
+            fs::metadata(executable).context("rollback package lacks configured executable")?;
+        ensure!(
+            metadata.is_file() && metadata.permissions().mode() & 0o111 != 0,
+            "rollback executable is not executable"
+        );
+        backend.root(&target.output, &release_root(dir, target)?)?;
+        ensure_current(cfg, config_path)?;
+        switch_profile(dir, &target.output)?;
+        backend
+            .restart(&cfg.service())
+            .context("rollback application did not become ready")?;
+        ensure_current(cfg, config_path)?;
+        eprintln!("{}: restored previous release {}", cfg.app, target.revision);
+    } else {
+        // Do not leave the failed first release selected for a later boot.
+        match fs::remove_file(dir.join("profile")) {
+            Ok(()) => sync_directory(dir)?,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => (),
+            Err(error) => return Err(error.into()),
+        }
+        eprintln!(
+            "{}: no previous package to restore; application stopped",
+            cfg.app
+        );
+    }
+    state.recovery = None;
+    save_state(dir, state)?;
+    cleanup(dir, state)
+}
+
+/// Authorize one retry. The regular updater performs it with its normal credentials.
+pub fn request_retry(cfg: &Config, config_path: &Path) -> Result<()> {
+    cfg.validate()?;
+    let dir = &cfg.state_directory;
+    let _lock = lock(dir)?;
+    ensure_current(cfg, config_path)?;
+    let mut state = load_state(dir)?;
+    ensure!(
+        state.recovery.is_none(),
+        "recovery is still pending; run the updater to finish recovery first"
+    );
+    let failed = state
+        .failed
+        .as_ref()
+        .context("no failed release to retry")?;
+    ensure!(
+        failed.configuration == *cfg,
+        "failed release used a different configuration; run the updater normally"
+    );
+    state.pending = state.failed.take();
+    save_state(dir, &state)
 }
 
 fn release_root(dir: &Path, release: &Release) -> Result<PathBuf> {
@@ -208,6 +353,13 @@ fn cleanup(dir: &Path, state: &State) -> Result<()> {
         .active
         .iter()
         .chain(state.pending.iter())
+        .chain(state.failed.iter())
+        .chain(
+            state
+                .recovery
+                .iter()
+                .filter_map(|recovery| recovery.target.as_ref()),
+        )
         .map(|release| release_root(dir, release))
         .collect::<Result<_>>()?;
     // Keep the currently selected output until the restart completes as well.

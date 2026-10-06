@@ -15,7 +15,10 @@ let
     let
       probe = app.readiness;
       attempts = pkgs.writeShellScript "nixploy-readiness-attempts-${name}" ''
+        SECONDS=0
+        failures=0
         while true; do
+          probe_started=$SECONDS
           if status=$(${pkgs.curl}/bin/curl --disable --silent --globoff \
             --noproxy '*' --proto '=http,https' --disallow-username-in-url \
             --cacert /etc/ssl/certs/ca-certificates.crt \
@@ -24,6 +27,13 @@ let
             --url ${lib.escapeShellArg probe.url}) \
             && [ "$status" = ${lib.escapeShellArg (toString probe.expectedStatus)} ]; then
             exit 0
+          fi
+          if [ "$probe_started" -ge ${toString probe.startPeriodSeconds} ]; then
+            failures=$((failures + 1))
+            if [ "$failures" -ge ${toString probe.failureThreshold} ]; then
+              echo "Readiness failure threshold reached ($failures probes)" >&2
+              exit 1
+            fi
           fi
           ${pkgs.coreutils}/bin/sleep ${toString probe.intervalSeconds}
         done
@@ -34,7 +44,7 @@ let
       if ${pkgs.coreutils}/bin/timeout --kill-after=1s ${toString probe.timeoutSeconds}s ${attempts}; then
         echo "Application readiness probe passed"
       else
-        echo "Application readiness probe failed (deadline ${toString probe.timeoutSeconds}s)" >&2
+        echo "Application readiness probe failed (threshold reached or ${toString probe.timeoutSeconds}s deadline expired)" >&2
         exit 1
       fi
     '';
@@ -66,6 +76,7 @@ let
       ;
     system = pkgs.stdenv.hostPlatform.system;
     stateDirectory = stateDir name;
+    rollback = app.rollback.enable;
     # Include resolved runtime overrides so they invalidate in-flight workers.
     generation = builtins.hashString "sha256" (
       builtins.toJSON {
@@ -78,6 +89,7 @@ let
 in
 {
   config = lib.mkIf (apps != { }) {
+    environment.systemPackages = [ worker ];
     nix.settings.experimental-features = [
       "nix-command"
       "flakes"
