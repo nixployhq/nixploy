@@ -41,7 +41,8 @@ let
     # Include resolved runtime overrides so they invalidate in-flight workers.
     generation = builtins.hashString "sha256" (
       builtins.toJSON {
-        inherit app;
+        # Endpoint metadata alone does not change the deployed application.
+        app = lib.removeAttrs app [ "endpoint" ];
         inherit (config.systemd.services."nixploy-app-${name}") serviceConfig environment;
       }
     );

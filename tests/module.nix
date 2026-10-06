@@ -55,7 +55,169 @@ let
     };
   };
   httpsRuntime = evaluate { demo = httpsApp; };
+  endpointRuntime = evaluate {
+    demo = publicApp // {
+      endpoint.port = 3000;
+    };
+  };
+  endpointOverrideRuntime = evaluate {
+    demo = publicApp // {
+      endpoint.port = 3000;
+      environment = {
+        HOST = "0.0.0.0";
+        PORT = "8080";
+        APP_MODE = "production";
+      };
+    };
+  };
+  endpointSchemeRuntime = evaluate {
+    demo = publicApp // {
+      endpoint = {
+        port = 3000;
+        scheme = "https";
+      };
+    };
+  };
+  endpointIpv6Runtime = evaluate {
+    demo = publicApp // {
+      endpoint = {
+        host = "::1";
+        port = 4000;
+      };
+      environment.APP_MODE = "production";
+    };
+  };
+  endpoint =
+    settings:
+    (evaluate {
+      demo = publicApp // {
+        endpoint = settings;
+      };
+    }).services.nixploy.apps.demo.endpoint;
+  proxyConfig =
+    (lib.nixosSystem {
+      system = "x86_64-linux";
+      modules = [
+        ../nix/modules/nixploy.nix
+        ({ config, ... }: {
+          services.nixploy.apps.demo = publicApp // {
+            endpoint.port = 3000;
+          };
+          services.cloudflared.tunnels.demo = {
+            credentialsFile = "/run/secrets/tunnel.json";
+            default = "http_status:404";
+            ingress."foo.example.com" = config.services.nixploy.apps.demo.endpoint.url;
+          };
+        })
+      ];
+    }).config;
   tests = {
+    endpointConsumer =
+      proxyConfig.services.cloudflared.tunnels.demo.ingress."foo.example.com" == "http://127.0.0.1:3000"
+      && proxyConfig.services.nixploy.apps.demo.environment.PORT == "3000";
+    endpointOptional = defaults.endpoint == null;
+    endpointUrl = (endpoint { port = 3000; }).url == "http://127.0.0.1:3000";
+    endpointHttps =
+      (endpoint {
+        scheme = "https";
+        host = "app.internal";
+        port = 8443;
+      }).url == "https://app.internal:8443";
+    endpointIpv6 =
+      (endpoint {
+        host = "::1";
+        port = 3000;
+      }).url == "http://[::1]:3000";
+    endpointReadOnly = rejects {
+      demo = publicApp // {
+        endpoint = {
+          port = 3000;
+          url = "http://override";
+        };
+      };
+    };
+    endpointPortRequired = rejects {
+      demo = publicApp // {
+        endpoint = { };
+      };
+    };
+    endpointPortRange =
+      lib.all
+        (
+          port:
+          rejects {
+            demo = publicApp // {
+              endpoint = { inherit port; };
+            };
+          }
+        )
+        [
+          0
+          65536
+        ];
+    endpointBadScheme = rejects {
+      demo = publicApp // {
+        endpoint = {
+          scheme = "ftp";
+          port = 3000;
+        };
+      };
+    };
+    endpointBadHost =
+      lib.all
+        (
+          host:
+          rejects {
+            demo = publicApp // {
+              endpoint = {
+                inherit host;
+                port = 3000;
+              };
+            };
+          }
+        )
+        [
+          ""
+          "https://localhost"
+          "user@host"
+          "host/path"
+          "host:3000"
+          "a b"
+          "[::1]"
+        ];
+    endpointEnvironment =
+      endpointRuntime.services.nixploy.apps.demo.environment == {
+        HOST = "127.0.0.1";
+        PORT = "3000";
+      }
+      && endpointRuntime.systemd.services.nixploy-app-demo.environment.HOST == "127.0.0.1"
+      && endpointRuntime.systemd.services.nixploy-app-demo.environment.PORT == "3000";
+    endpointEnvironmentOverrides =
+      endpointOverrideRuntime.services.nixploy.apps.demo.environment == {
+        HOST = "0.0.0.0";
+        PORT = "8080";
+        APP_MODE = "production";
+      }
+      && endpointOverrideRuntime.systemd.services.nixploy-app-demo.environment.HOST == "0.0.0.0"
+      && endpointOverrideRuntime.systemd.services.nixploy-app-demo.environment.PORT == "8080"
+      && endpointOverrideRuntime.services.nixploy.apps.demo.endpoint.url == "http://127.0.0.1:3000";
+    endpointIpv6Environment =
+      endpointIpv6Runtime.services.nixploy.apps.demo.environment == {
+        HOST = "::1";
+        PORT = "4000";
+        APP_MODE = "production";
+      };
+    endpointEnvironmentChangesGeneration =
+      (builtins.fromJSON endpointRuntime.environment.etc."nixploy/demo.json".text).generation
+      != (builtins.fromJSON runtime.environment.etc."nixploy/demo.json".text).generation;
+    endpointSchemeDoesNotChangeGeneration =
+      endpointSchemeRuntime.environment.etc."nixploy/demo.json".text
+      == endpointRuntime.environment.etc."nixploy/demo.json".text;
+    endpointDoesNotConfigureListener =
+      endpointRuntime.systemd.services.nixploy-app-demo.serviceConfig
+      == runtime.systemd.services.nixploy-app-demo.serviceConfig
+      &&
+        endpointRuntime.networking.firewall.allowedTCPPorts == runtime.networking.firewall.allowedTCPPorts;
     httpsCredentials =
       httpsRuntime.systemd.services.nixploy-update-demo.serviceConfig.LoadCredential
       == [ "git-token:/run/secrets/git-token" ];

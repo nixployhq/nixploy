@@ -24,7 +24,7 @@ let
       lib.splitString "/" value
     )
   );
-  appModule = {
+  appModule = { config, ... }: {
     options = {
       enable = mkOption {
         type = types.bool;
@@ -56,6 +56,46 @@ let
         default = "1min";
         example = "30s";
         description = "Delay after an update attempt completes. Positive integer followed by s, min, h, or d.";
+      };
+      endpoint = mkOption {
+        default = null;
+        description = "Optional connection endpoint for proxies and other consumers. Supplies default HOST and PORT environment variables; the application must respect them. Does not open firewall ports.";
+        type = types.nullOr (
+          types.submodule (
+            { config, ... }: {
+              options = {
+                scheme = mkOption {
+                  type = types.enum [
+                    "http"
+                    "https"
+                  ];
+                  default = "http";
+                  description = "Protocol served by the application endpoint.";
+                };
+                host = mkOption {
+                  type = types.strMatching "([A-Za-z0-9][A-Za-z0-9._-]*|[0-9A-Fa-f]*:[0-9A-Fa-f:.]*)";
+                  default = "127.0.0.1";
+                  description = "Connectable hostname or IP address, with IPv6 supplied without brackets. Do not include a scheme, port, or path.";
+                };
+                port = mkOption {
+                  type = types.ints.between 1 65535;
+                  example = 3000;
+                  description = "Port on which the application can be reached.";
+                };
+                url = mkOption {
+                  type = types.str;
+                  readOnly = true;
+                  default =
+                    let
+                      host = if lib.hasInfix ":" config.host then "[${config.host}]" else config.host;
+                    in
+                    "${config.scheme}://${host}:${toString config.port}";
+                  description = "Derived endpoint URL for use by other NixOS modules.";
+                };
+              };
+            }
+          )
+        );
       };
       git = {
         https = {
@@ -92,8 +132,12 @@ let
           HOST = "0.0.0.0";
           PORT = "3000";
         };
-        description = "Non-secret application environment variables. These values enter the Nix store.";
+        description = "Non-secret application environment variables. When endpoint is set, HOST and PORT default to its host and port; explicit values override these defaults. These values enter the Nix store.";
       };
+    };
+    config.environment = lib.mkIf (config.endpoint != null) {
+      HOST = lib.mkDefault config.endpoint.host;
+      PORT = lib.mkDefault (toString config.endpoint.port);
     };
   };
 in
