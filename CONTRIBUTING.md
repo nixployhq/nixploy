@@ -33,6 +33,16 @@ It covers authenticated deployment, incorrect and missing credentials, token
 rotation, redirect rejection, and checks for secret leakage. It does not require
 a GitHub account or a real PAT.
 
+The `secret-providers` check imports pinned sops-nix and agenix modules. It
+creates test identities and encrypted data inside the VM, then verifies Git
+credentials, application environment files, permissions, and rotation through
+both providers. Their source-only flake inputs are used for tests; the Nixploy
+module does not import or enable either provider.
+
+```sh
+nix build path:.#checks.x86_64-linux.secret-providers -L
+```
+
 For a local smoke test on macOS or Linux with Git, Nix, and Python 3 available:
 
 ```sh

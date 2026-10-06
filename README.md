@@ -132,6 +132,19 @@ the application repository; private flake inputs need separate authentication.
 See [examples/nixos/configuration.nix](examples/nixos/configuration.nix) for a configuration
 with explicit defaults.
 
+## Secret providers
+
+Nixploy works with sops-nix, agenix, and other tools that provision runtime files.
+Pass the provider’s decrypted path to the credential option, for example:
+
+```nix
+git.https.tokenFile = config.sops.secrets.git-token.path;
+# Or: config.age.secrets.git-token.path
+```
+
+See [Secret providers](docs/secrets.md) for complete configuration snippets,
+application secrets, startup ordering, and rotation.
+
 ## Application data and secrets
 
 Use standard NixOS systemd options to provide writable storage and runtime secrets:

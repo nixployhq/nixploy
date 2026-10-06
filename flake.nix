@@ -1,10 +1,26 @@
 {
   description = "Automatic application deployment for NixOS";
 
-  inputs.nixpkgs.url = "github:NixOS/nixpkgs/nixos-unstable";
+  inputs = {
+    nixpkgs.url = "github:NixOS/nixpkgs/nixos-unstable";
+    # Source-only inputs used by integration checks, not imported by the module.
+    sops-nix-tests = {
+      url = "github:Mic92/sops-nix";
+      flake = false;
+    };
+    agenix-tests = {
+      url = "github:ryantm/agenix";
+      flake = false;
+    };
+  };
 
   outputs =
-    { self, nixpkgs }:
+    {
+      self,
+      nixpkgs,
+      sops-nix-tests,
+      agenix-tests,
+    }:
     let
       systems = [
         "x86_64-linux"
@@ -53,6 +69,11 @@
         // nixpkgs.lib.optionalAttrs pkgs.stdenv.hostPlatform.isLinux {
           lifecycle = import ./tests/vm.nix { inherit pkgs; };
           https-auth = import ./tests/https.nix { inherit pkgs; };
+          secret-providers = import ./tests/secrets.nix {
+            inherit pkgs;
+            sopsSource = sops-nix-tests;
+            ageSource = agenix-tests;
+          };
         }
       );
 
