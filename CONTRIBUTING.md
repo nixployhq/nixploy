@@ -25,8 +25,13 @@ timer updates, failed builds, permissions, GC protection, and pending activation
 recovery across reboot. Run it on an x86_64 Linux host with KVM available:
 
 ```sh
-nix build path:.#checks.x86_64-linux.lifecycle -L
+nix build path:.#checks.x86_64-linux.lifecycle path:.#checks.x86_64-linux.https-auth -L
 ```
+
+The `https-auth` check uses a local TLS Git server and runtime-generated tokens.
+It covers authenticated deployment, incorrect and missing credentials, token
+rotation, redirect rejection, and checks for secret leakage. It does not require
+a GitHub account or a real PAT.
 
 For a local smoke test on macOS or Linux with Git, Nix, and Python 3 available:
 

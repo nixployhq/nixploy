@@ -58,11 +58,13 @@ Options live under `services.nixploy.apps.<name>`.
 | App option | Default | Contract |
 | --- | --- | --- |
 | `enable` | `true` | Enable deployment and runtime units. |
-| `repository` | Required | Public HTTPS URL, SSH URL, or `user@host:path`. |
+| `repository` | Required | HTTPS URL, SSH URL, or `user@host:path`. |
 | `branch` | `"main"` | Branch name relative to `refs/heads/`. |
 | `package` | `"default"` | Name under `packages.<host-system>`, not a full attribute path. |
 | `executable` | Required | Binary name in the package's `bin/`, not a path or command. |
 | `pollInterval` | `"1min"` | Delay after an attempt completes; positive integer with `s`, `min`, `h`, or `d`. |
+| `git.https.username` | `null` | HTTPS username expected by your Git provider; required with `tokenFile`. |
+| `git.https.tokenFile` | `null` | Absolute string path to a file containing an HTTPS access token. |
 | `git.privateKeyFile` | `null` | Existing SSH private key, as an absolute string path. |
 | `git.knownHostsFile` | `null` | Existing known-hosts file, as an absolute string path; required for enabled SSH apps. |
 | `environment` | `{}` | Non-secret environment variables with string values. |
@@ -73,6 +75,40 @@ Package names allow letters, digits, `_`, `+`, and `-`; executable names also
 allow dots, except `.` and `..`.
 
 ## Private repositories
+
+### HTTPS tokens
+
+Use an access token with permission to read the repository:
+
+```nix
+services.nixploy.apps.my-app = {
+  repository = "https://github.com/your-org/your-app.git";
+  executable = "your-app";
+  git.https = {
+    username = "your-git-username";
+    tokenFile = "/run/secrets/my-app-git-token";
+  };
+};
+```
+
+These options are provider-independent. Set the username required by your Git
+provider and provision the token file separately, for example with sops-nix or
+agenix. The file must contain only the token on a single line; a trailing newline
+is allowed. Use a quoted absolute path string so its contents stay out of the
+Nix store. Both `username` and `tokenFile` are required.
+
+Nixploy loads the file through systemd credentials for each update and supplies
+the token as the HTTPS password through a repository-scoped Git credential
+helper. Tokens are not put in repository URLs, command arguments, environment
+variables, or deployment state. Replacing the file rotates the token on the next
+update; automatic token issuance and renewal are not provided.
+
+Authenticated HTTPS URLs must not contain embedded credentials, a query, or a
+fragment. Redirects are disabled: use the repository’s canonical clone URL. HTTPS
+token settings cannot be combined with SSH credential settings. These credentials
+authenticate the app repository, not its private flake inputs.
+
+### SSH keys
 
 For an SSH repository, provide a known-hosts file and, when needed, a private key:
 
@@ -156,8 +192,9 @@ Nixploy is an initial MVP:
 - Deployment targets must run NixOS. Updates use polling; there are no webhooks.
 - Successful activation means the process started. There are no application
   health checks or automatic rollback.
-- Repository authentication supports public HTTPS and SSH. HTTPS tokens and
-  credential helpers are outside the current interface.
+- Repository authentication supports HTTPS tokens and SSH keys. Provider-specific
+  token generation (such as GitHub Apps) and arbitrary credential helpers are
+  not configured by this interface.
 - Git submodules and Git LFS are not fetched. Missing or inconsistent lockfiles
   fail deployment.
 

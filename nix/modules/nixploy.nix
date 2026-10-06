@@ -34,7 +34,7 @@ let
       repository = mkOption {
         type = repositoryType;
         example = "git@github.com:example/app.git";
-        description = "Git repository: public HTTPS, ssh://, or user@host:path. HTTPS credentials are not supported.";
+        description = "Git repository: HTTPS, ssh://, or user@host:path. Use git.https for HTTPS token authentication.";
       };
       branch = mkOption {
         type = branchType;
@@ -58,6 +58,20 @@ let
         description = "Delay after an update attempt completes. Positive integer followed by s, min, h, or d.";
       };
       git = {
+        https = {
+          username = mkOption {
+            type = types.nullOr (types.strMatching "[^[:space:][:cntrl:]:]+");
+            default = null;
+            example = "git-user";
+            description = "Username for HTTPS authentication. Required together with tokenFile; use the value expected by your Git provider.";
+          };
+          tokenFile = mkOption {
+            type = types.nullOr absoluteFile;
+            default = null;
+            example = "/run/secrets/my-app-git-token";
+            description = "Absolute string path to a file containing an HTTPS access token as a single line. Provision outside the Nix store; loaded through systemd credentials at each update.";
+          };
+        };
         privateKeyFile = mkOption {
           type = types.nullOr absoluteFile;
           default = null;
@@ -102,6 +116,21 @@ in
         assertion =
           !app.enable || lib.hasPrefix "https://" app.repository || app.git.knownHostsFile != null;
         message = "services.nixploy.apps.${name}.git.knownHostsFile is required for SSH repositories.";
+      }
+      {
+        assertion = !app.enable || ((app.git.https.username == null) == (app.git.https.tokenFile == null));
+        message = "services.nixploy.apps.${name}.git.https requires both username and tokenFile.";
+      }
+      {
+        assertion =
+          !app.enable
+          || app.git.https.tokenFile == null
+          || (
+            matches "https://[^/@[:space:][:cntrl:]?#]+/[^[:space:][:cntrl:]?#]+" app.repository
+            && app.git.privateKeyFile == null
+            && app.git.knownHostsFile == null
+          );
+        message = "services.nixploy.apps.${name}.git.https requires an HTTPS URL without userinfo, query, or fragment, and cannot be combined with SSH credentials.";
       }
       {
         assertion = lib.all (matches "[A-Za-z_][A-Za-z0-9_]*") (builtins.attrNames app.environment);

@@ -48,7 +48,80 @@ let
       };
     };
   };
+  httpsApp = publicApp // {
+    git.https = {
+      username = "test-user";
+      tokenFile = "/run/secrets/git-token";
+    };
+  };
+  httpsRuntime = evaluate { demo = httpsApp; };
   tests = {
+    httpsCredentials =
+      httpsRuntime.systemd.services.nixploy-update-demo.serviceConfig.LoadCredential
+      == [ "git-token:/run/secrets/git-token" ];
+    httpsHelperScope =
+      httpsRuntime.systemd.services.nixploy-update-demo.environment.GIT_CONFIG_VALUE_2 == "true"
+      && httpsRuntime.systemd.services.nixploy-update-demo.environment.GIT_CONFIG_VALUE_3 == "false";
+    httpsValid = valid { demo = httpsApp; };
+    httpsUsernameRequired = rejects {
+      demo = publicApp // {
+        git.https.tokenFile = "/run/token";
+      };
+    };
+    httpsTokenRequired = rejects {
+      demo = publicApp // {
+        git.https.username = "user";
+      };
+    };
+    httpsRelativeToken = rejects {
+      demo = publicApp // {
+        git.https = {
+          username = "user";
+          tokenFile = "token";
+        };
+      };
+    };
+    httpsNixPathToken = rejects {
+      demo = publicApp // {
+        git.https = {
+          username = "user";
+          tokenFile = ./module.nix;
+        };
+      };
+    };
+    httpsSshMix = rejects {
+      demo = httpsApp // {
+        git = httpsApp.git // {
+          privateKeyFile = "/run/key";
+        };
+      };
+    };
+    httpsSshRepository = rejects {
+      demo = httpsApp // {
+        repository = sshApp.repository;
+        git = httpsApp.git // {
+          knownHostsFile = "/run/hosts";
+        };
+      };
+    };
+    httpsQuery = rejects {
+      demo = httpsApp // {
+        repository = "https://example.com/app.git?token=value";
+      };
+    };
+    httpsUserinfo = rejects {
+      demo = httpsApp // {
+        repository = "https://user:password@example.com/app.git";
+      };
+    };
+    httpsUsernameInjection = rejects {
+      demo = publicApp // {
+        git.https = {
+          username = "user\npassword=secret";
+          tokenFile = "/run/token";
+        };
+      };
+    };
     workerUsesDaemon =
       (runtime.systemd.services.nixploy-update-demo.environment.NIX_REMOTE or null) == "daemon";
     updateRetriesNotRateLimited =
@@ -89,6 +162,8 @@ let
       && defaults.pollInterval == "1min"
       && defaults.git.privateKeyFile == null
       && defaults.git.knownHostsFile == null
+      && defaults.git.https.username == null
+      && defaults.git.https.tokenFile == null
       && defaults.environment == { };
     example = valid (import ../examples/nixos/configuration.nix { }).services.nixploy.apps;
     sshUrl = valid {

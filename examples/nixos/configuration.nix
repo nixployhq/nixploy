@@ -7,7 +7,7 @@
     branch = "main";
     package = "default";
     executable = "nixploy-demo";
-    pollInterval = "1m";
+    pollInterval = "1min";
     environment = {
       HOST = "0.0.0.0";
       PORT = "3000";

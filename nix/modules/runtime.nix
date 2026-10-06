@@ -23,6 +23,11 @@ let
           ) ''-o IdentitiesOnly=yes -i "$CREDENTIALS_DIRECTORY/private-key"''
         } "$@"
     '';
+  httpsHelper =
+    name: app:
+    pkgs.writeShellScript "nixploy-https-${name}" ''
+      exec ${worker}/bin/nixploy-git-credential ${lib.escapeShellArg app.repository} ${lib.escapeShellArg app.git.https.username} "$@"
+    '';
   workerConfig = name: app: {
     app = name;
     inherit (app)
@@ -133,6 +138,20 @@ in
           // lib.optionalAttrs (app.git.knownHostsFile != null) {
             GIT_SSH = toString (sshWrapper name app);
             GIT_SSH_VARIANT = "ssh";
+          }
+          // lib.optionalAttrs (app.git.https.tokenFile != null) {
+            # Reset inherited helpers. Never store a token in config, argv, or env.
+            GIT_CONFIG_COUNT = "4";
+            GIT_CONFIG_KEY_0 = "credential.helper";
+            GIT_CONFIG_VALUE_0 = "";
+            GIT_CONFIG_KEY_1 = "credential.helper";
+            GIT_CONFIG_VALUE_1 = toString (httpsHelper name app);
+            GIT_CONFIG_KEY_2 = "credential.useHttpPath";
+            GIT_CONFIG_VALUE_2 = "true";
+            GIT_CONFIG_KEY_3 = "http.followRedirects";
+            GIT_CONFIG_VALUE_3 = "false";
+            GIT_ASKPASS = "${pkgs.coreutils}/bin/false";
+            SSH_ASKPASS = "${pkgs.coreutils}/bin/false";
           };
           # Causes a running worker to be stopped when its configuration changes.
           restartTriggers = [ config.environment.etc."nixploy/${name}.json".source ];
@@ -147,7 +166,8 @@ in
             PrivateTmp = true;
             LoadCredential =
               lib.optional (app.git.privateKeyFile != null) "private-key:${app.git.privateKeyFile}"
-              ++ lib.optional (app.git.knownHostsFile != null) "known-hosts:${app.git.knownHostsFile}";
+              ++ lib.optional (app.git.knownHostsFile != null) "known-hosts:${app.git.knownHostsFile}"
+              ++ lib.optional (app.git.https.tokenFile != null) "git-token:${app.git.https.tokenFile}";
           };
         }
       ) apps)

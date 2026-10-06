@@ -52,6 +52,7 @@
         }
         // nixpkgs.lib.optionalAttrs pkgs.stdenv.hostPlatform.isLinux {
           lifecycle = import ./tests/vm.nix { inherit pkgs; };
+          https-auth = import ./tests/https.nix { inherit pkgs; };
         }
       );
 
