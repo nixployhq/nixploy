@@ -73,6 +73,11 @@
             inherit pkgs;
             rollback = true;
           };
+          remote-builder = import ./tests/readiness.nix {
+            inherit pkgs;
+            rollback = true;
+            remoteBuild = true;
+          };
           https-auth = import ./tests/https.nix { inherit pkgs; };
           secret-providers = import ./tests/secrets.nix {
             inherit pkgs;

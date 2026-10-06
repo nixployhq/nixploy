@@ -51,6 +51,17 @@ configuration changes, and superseding failed recovery with a new commit.
 nix build path:.#checks.x86_64-linux.rollback -L
 ```
 
+The `remote-builder` check runs the rollback scenario with a separate builder VM
+configured through `nix.buildMachines` over `ssh-ng`. SSH credentials are generated
+inside the VMs. Local builds and binary substitutes are disabled, and the fixture
+requires a feature available only on the builder. It checks remote build logs and
+the output in the builder's store, then exercises deployment, readiness, rollback,
+reboot, and explicit retry on the app host.
+
+```sh
+nix build path:.#checks.x86_64-linux.remote-builder -L
+```
+
 The `secret-providers` check imports pinned sops-nix and agenix modules. It
 creates test identities and encrypted data inside the VM, then verifies Git
 credentials, application environment files, permissions, and rotation through

@@ -1,6 +1,7 @@
 {
   pkgs,
   rollback ? false,
+  remoteBuild ? false,
 }:
 let
   fixtureFlake = pkgs.writeText "readiness-flake.nix" ''
@@ -9,9 +10,11 @@ let
         packages.${pkgs.stdenv.hostPlatform.system}.default = builtins.derivation {
           name = "readiness-fixture";
           system = "${pkgs.stdenv.hostPlatform.system}";
+          ${pkgs.lib.optionalString remoteBuild ''requiredSystemFeatures = [ "nixploy-builder" ];''}
           builder = builtins.appendContext "${pkgs.runtimeShell}" {
             "${pkgs.bashNonInteractive}" = { path = true; };
             "${pkgs.coreutils}" = { path = true; };
+            "${pkgs.python3}" = { path = true; };
           };
           args = [ "-ec" "${pkgs.coreutils}/bin/mkdir -p $out/bin; ${pkgs.coreutils}/bin/cp $src/server $out/bin/server; ${pkgs.coreutils}/bin/chmod +x $out/bin/server; exit 0" ];
           src = self.outPath;
@@ -56,47 +59,90 @@ let
   '';
 in
 pkgs.testers.runNixOSTest {
-  name = if rollback then "nixploy-rollback" else "nixploy-readiness";
-  nodes.machine = { lib, ... }: {
-    imports = [ ../nix/modules/nixploy.nix ];
-    virtualisation.memorySize = 2048;
-    virtualisation.writableStoreUseTmpfs = false;
-    environment.systemPackages = [
-      pkgs.git
-      pkgs.jq
-    ];
-    system.extraDependencies = [
-      pkgs.bashNonInteractive
-      pkgs.coreutils
-      pkgs.python3
-      fixtureFlake
-      fixtureServer
-    ];
-    nix.settings.substituters = lib.mkForce [ ];
-    services.nixploy.apps.demo = {
-      repository = "https://fixture.invalid/app.git";
-      executable = "server";
-      pollInterval = "1h";
-      endpoint.port = 3000;
-      readiness = {
-        path = "/health";
-        expectedStatus = 204;
-        timeoutSeconds = if rollback then 12 else 8;
-        startPeriodSeconds = if rollback then 3 else 0;
-        intervalSeconds = 1;
-        requestTimeoutSeconds = 2;
+  name =
+    if remoteBuild then
+      "nixploy-remote-builder"
+    else if rollback then
+      "nixploy-rollback"
+    else
+      "nixploy-readiness";
+  nodes =
+    pkgs.lib.optionalAttrs remoteBuild {
+      builder = { lib, ... }: {
+        virtualisation.memorySize = 2048;
+        services.openssh = {
+          enable = true;
+          settings.PasswordAuthentication = false;
+        };
+        users.groups.nixbuilder = { };
+        users.users.nixbuilder = {
+          isSystemUser = true;
+          group = "nixbuilder";
+          useDefaultShell = true;
+        };
+        nix.settings = {
+          trusted-users = [ "nixbuilder" ];
+          system-features = [ "nixploy-builder" ];
+          substituters = lib.mkForce [ ];
+        };
       };
-      rollback.enable = rollback;
-      # The probe must contact the app directly despite inherited proxy settings.
-      environment.http_proxy = "http://127.0.0.1:9";
+    }
+    // {
+      machine = { lib, ... }: {
+        imports = [ ../nix/modules/nixploy.nix ];
+        virtualisation.memorySize = 2048;
+        virtualisation.writableStoreUseTmpfs = false;
+        environment.systemPackages = [
+          pkgs.git
+          pkgs.jq
+        ];
+        system.extraDependencies = [
+          pkgs.bashNonInteractive
+          pkgs.coreutils
+          pkgs.python3
+          fixtureFlake
+          fixtureServer
+        ];
+        nix.settings.substituters = lib.mkForce [ ];
+        nix.distributedBuilds = remoteBuild;
+        nix.settings.max-jobs = lib.mkIf remoteBuild (lib.mkForce 0);
+        nix.settings.builders-use-substitutes = remoteBuild;
+        nix.buildMachines = lib.optionals remoteBuild [
+          {
+            hostName = "builder";
+            system = pkgs.stdenv.hostPlatform.system;
+            protocol = "ssh-ng";
+            sshUser = "nixbuilder";
+            sshKey = "/root/.ssh/nix-builder";
+            maxJobs = 2;
+            supportedFeatures = [ "nixploy-builder" ];
+          }
+        ];
+        services.nixploy.apps.demo = {
+          repository = "https://fixture.invalid/app.git";
+          executable = "server";
+          pollInterval = "1h";
+          endpoint.port = 3000;
+          readiness = {
+            path = "/health";
+            expectedStatus = 204;
+            timeoutSeconds = if rollback then 12 else 8;
+            startPeriodSeconds = if rollback then 3 else 0;
+            intervalSeconds = 1;
+            requestTimeoutSeconds = 2;
+          };
+          rollback.enable = rollback;
+          # The probe must contact the app directly despite inherited proxy settings.
+          environment.http_proxy = "http://127.0.0.1:9";
+        };
+        systemd.services.nixploy-app-demo.serviceConfig.StateDirectory = "readiness";
+        systemd.services.nixploy-update-demo.environment = {
+          GIT_CONFIG_COUNT = "1";
+          GIT_CONFIG_KEY_0 = "url.file:///srv/app.insteadOf";
+          GIT_CONFIG_VALUE_0 = "https://fixture.invalid/app.git";
+        };
+      };
     };
-    systemd.services.nixploy-app-demo.serviceConfig.StateDirectory = "readiness";
-    systemd.services.nixploy-update-demo.environment = {
-      GIT_CONFIG_COUNT = "1";
-      GIT_CONFIG_KEY_0 = "url.file:///srv/app.insteadOf";
-      GIT_CONFIG_VALUE_0 = "https://fixture.invalid/app.git";
-    };
-  };
   testScript = ''
     import json
     import time
@@ -104,6 +150,20 @@ pkgs.testers.runNixOSTest {
     start_all()
     machine.wait_for_unit("multi-user.target")
     machine.succeed("systemctl stop nixploy-update-demo.timer nixploy-update-demo.service")
+  ''
+  + pkgs.lib.optionalString remoteBuild ''
+    import shlex
+
+    builder.wait_for_unit("sshd.service")
+    machine.succeed("mkdir -p /root/.ssh; chmod 700 /root/.ssh; ssh-keygen -t ed25519 -N \"\" -f /root/.ssh/nix-builder")
+    public_key = machine.succeed("cat /root/.ssh/nix-builder.pub").strip()
+    builder.succeed("mkdir -p /etc/ssh/authorized_keys.d; printf '%s\\n' " + shlex.quote(public_key) + " > /etc/ssh/authorized_keys.d/nixbuilder")
+    host_key = builder.succeed("cat /etc/ssh/ssh_host_ed25519_key.pub").strip()
+    machine.succeed("printf '%s\\n' " + shlex.quote("builder " + host_key) + " > /root/.ssh/known_hosts")
+    machine.succeed("ssh -o BatchMode=yes -o StrictHostKeyChecking=yes -i /root/.ssh/nix-builder nixbuilder@builder true")
+    machine.succeed("grep -q '^max-jobs = 0$' /etc/nix/nix.conf")
+  ''
+  + ''
     machine.succeed("git init -b main /srv/app")
     machine.succeed("git -C /srv/app config user.name fixture")
     machine.succeed("git -C /srv/app config user.email fixture@example.invalid")
@@ -126,6 +186,12 @@ pkgs.testers.runNixOSTest {
     machine.wait_until_succeeds("jq -e '.active != null and .pending == null' /var/lib/nixploy/demo/state.json")
     machine.wait_for_unit("nixploy-app-demo.service")
     first = state()["active"]
+  ''
+  + pkgs.lib.optionalString remoteBuild ''
+    # A fresh derivation requiring a builder-only feature cannot build locally.
+    builder.succeed("nix-store --check-validity " + first["output"])
+    machine.succeed("journalctl -u nixploy-update-demo.service | grep 'building.*on.*ssh-ng://nixbuilder@builder'")
+    builder.fail("systemctl cat nixploy-app-demo.service")
   ''
   + (
     if rollback then
