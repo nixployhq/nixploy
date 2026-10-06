@@ -125,6 +125,54 @@ let
           description = "Absolute string path to an existing known-hosts file. Required for SSH repositories; host verification must remain enabled.";
         };
       };
+      readiness = mkOption {
+        default = null;
+        description = "Optional HTTP(S) startup probe. A successful response is required before activation completes; this is not continuous health monitoring.";
+        type = types.nullOr (
+          types.submodule (
+            probeArgs:
+            let
+              probe = probeArgs.config;
+            in
+            {
+              options = {
+                path = mkOption {
+                  type = types.strMatching "/[^[:space:][:cntrl:]?#]*";
+                  default = "/";
+                  example = "/health";
+                  description = "Path appended to endpoint.url when readiness.url is not explicitly set.";
+                };
+                url = mkOption {
+                  type = types.strMatching "https?://[^/@[:space:][:cntrl:]?#]+(/[^[:space:][:cntrl:]#]*)?";
+                  default = if config.endpoint == null then null else config.endpoint.url + probe.path;
+                  defaultText = lib.literalExpression "endpoint.url + readiness.path";
+                  description = "HTTP(S) URL to probe directly. Required when no endpoint is configured. Do not include credentials or secrets; this value enters the Nix store.";
+                };
+                expectedStatus = mkOption {
+                  type = types.ints.between 100 599;
+                  default = 200;
+                  description = "Exact HTTP status required for readiness. Redirects are not followed.";
+                };
+                timeoutSeconds = mkOption {
+                  type = types.ints.between 1 120;
+                  default = 30;
+                  description = "Total time allowed for the startup probe, including requests and retry delays.";
+                };
+                intervalSeconds = mkOption {
+                  type = types.ints.between 1 60;
+                  default = 1;
+                  description = "Delay between failed probe attempts, in seconds.";
+                };
+                requestTimeoutSeconds = mkOption {
+                  type = types.ints.between 1 30;
+                  default = 5;
+                  description = "Maximum duration of each HTTP request, within the total probe timeout.";
+                };
+              };
+            }
+          )
+        );
+      };
       environment = mkOption {
         type = types.attrsOf types.str;
         default = { };

@@ -73,6 +73,13 @@ Options live under `services.nixploy.apps.<name>`.
 | `endpoint.port` | Required when set | Integer from 1 to 65535. |
 | `endpoint.url` | Derived, read-only | URL built from the endpoint scheme, host, and port. |
 | `environment` | `{}` without an endpoint | Non-secret environment variables with string values; explicit values override endpoint defaults. |
+| `readiness` | `null` | Optional HTTP(S) startup probe. |
+| `readiness.path` | `"/"` | Path appended to the endpoint URL. |
+| `readiness.url` | Endpoint URL + path | Explicit probe URL; required without an endpoint. Overrides `path`. |
+| `readiness.expectedStatus` | `200` | Exact HTTP status required, from 100 to 599. |
+| `readiness.timeoutSeconds` | `30` | Total readiness deadline, from 1 to 120 seconds. |
+| `readiness.intervalSeconds` | `1` | Delay between failed attempts, from 1 to 60 seconds. |
+| `readiness.requestTimeoutSeconds` | `5` | Per-request timeout, from 1 to 30 seconds, bounded by the total deadline. |
 
 An empty app set is the default. There is no global enable option. App names
 start with a letter or digit and contain only letters, digits, `_`, or `-`.
@@ -115,9 +122,51 @@ For example, set `environment.HOST = "0.0.0.0";` to listen on all interfaces whi
 keeping the endpoint host at `127.0.0.1` for a local proxy. Overrides do not change
 the derived URL, so keep it consistent with where the application is reachable.
 
-Nixploy does not configure TLS, open firewall ports, install a proxy, or check
-readiness. Endpoint changes that alter the application's environment trigger a
-deployment on the next update; changes to the URL alone do not.
+The endpoint does not configure TLS, open firewall ports, install a proxy, or enable
+readiness checks. Endpoint changes that alter the application's environment trigger a
+deployment on the next update. URL changes also trigger deployment when used by
+a readiness probe; otherwise the URL is only an output for consumers.
+
+## Readiness checks
+
+Opt into an HTTP(S) startup probe for an app that exposes a readiness route:
+
+```nix
+services.nixploy.apps.my-app = {
+  repository = "https://github.com/your-org/your-app.git";
+  executable = "your-app";
+  endpoint.port = 3000;
+  readiness = {
+    path = "/health";
+    expectedStatus = 200;
+    timeoutSeconds = 30;
+    intervalSeconds = 1;
+    requestTimeoutSeconds = 5;
+  };
+};
+```
+
+Nixploy sends GET requests to `http://127.0.0.1:3000/health` until one completes
+with the expected status or the deadline expires. To use a separate management
+port or an app without an endpoint, set `readiness.url` to its full HTTP(S) URL.
+Choose an address that reaches this app directly; a shared proxy could answer
+for another instance. Probe URLs are non-secret configuration stored in the Nix store.
+
+The probe runs as the app's service user through systemd's `ExecStartPost`, on
+every start, including boot and automatic restarts. Deployment becomes active
+only after the probe succeeds. HTTPS uses the system CA bundle and verifies
+certificates; redirects are not followed and proxy environment variables are ignored.
+
+A timeout fails service startup and systemd stops the new process. The deployment
+stays pending, with the previous successful release retained in state and as a GC
+root. **The previous release is not restarted automatically:** the profile still
+selects the new release. Systemd may retry the service under its restart policy;
+the next deployment update retries pending activation and records success once
+ready. This does not provide rollback or zero-downtime deployment.
+
+These are startup checks, not continuous health monitoring. Without `readiness`,
+activation still requires only a successful process start. Changing readiness
+settings changes the deployment configuration and causes activation to be retried.
 
 ## Private repositories
 
@@ -248,8 +297,8 @@ reclaim unreferenced outputs. Keep application data in its own directory.
 Nixploy is an initial MVP:
 
 - Deployment targets must run NixOS. Updates use polling; there are no webhooks.
-- Successful activation means the process started. There are no application
-  health checks or automatic rollback.
+- Optional HTTP(S) readiness probes gate startup. There is no continuous health
+  monitoring, automatic rollback, or zero-downtime rollout.
 - Repository authentication supports HTTPS tokens and SSH keys. Provider-specific
   token generation (such as GitHub Apps) and arbitrary credential helpers are
   not configured by this interface.

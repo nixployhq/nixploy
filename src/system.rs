@@ -10,7 +10,8 @@ use std::{
 
 const GIT_TIMEOUT: Duration = Duration::from_secs(120);
 const BUILD_TIMEOUT: Duration = Duration::from_secs(3600);
-const ACTIVATION_TIMEOUT: Duration = Duration::from_secs(180);
+// Allow stop/start cleanup around the module's maximum 120-second readiness probe.
+const ACTIVATION_TIMEOUT: Duration = Duration::from_secs(300);
 
 pub struct SystemBackend {
     config: Config,

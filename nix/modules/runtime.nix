@@ -10,6 +10,34 @@ let
   appUser = name: "nixploy-${name}";
   stateDir = name: "/var/lib/nixploy/${name}";
   configFile = name: "/etc/nixploy/${name}.json";
+  readinessProbe =
+    name: app:
+    let
+      probe = app.readiness;
+      attempts = pkgs.writeShellScript "nixploy-readiness-attempts-${name}" ''
+        while true; do
+          if status=$(${pkgs.curl}/bin/curl --disable --silent --globoff \
+            --noproxy '*' --proto '=http,https' --disallow-username-in-url \
+            --cacert /etc/ssl/certs/ca-certificates.crt \
+            --max-time ${toString probe.requestTimeoutSeconds} \
+            --output /dev/null --write-out '%{http_code}' \
+            --url ${lib.escapeShellArg probe.url}) \
+            && [ "$status" = ${lib.escapeShellArg (toString probe.expectedStatus)} ]; then
+            exit 0
+          fi
+          ${pkgs.coreutils}/bin/sleep ${toString probe.intervalSeconds}
+        done
+      '';
+    in
+    pkgs.writeShellScript "nixploy-readiness-${name}" ''
+      echo "Waiting for application readiness"
+      if ${pkgs.coreutils}/bin/timeout --kill-after=1s ${toString probe.timeoutSeconds}s ${attempts}; then
+        echo "Application readiness probe passed"
+      else
+        echo "Application readiness probe failed (deadline ${toString probe.timeoutSeconds}s)" >&2
+        exit 1
+      fi
+    '';
   sshWrapper =
     name: app:
     pkgs.writeShellScript "nixploy-ssh-${name}" ''
@@ -104,12 +132,16 @@ in
             ExecStart = "${stateDir name}/profile/bin/${app.executable}";
             Restart = "on-failure";
             RestartSec = "5s";
-            TimeoutStartSec = "60s";
+            TimeoutStartSec =
+              if app.readiness == null then "60s" else "${toString (app.readiness.timeoutSeconds + 5)}s";
             TimeoutStopSec = "30s";
             NoNewPrivileges = true;
             ProtectSystem = "strict";
             ProtectHome = true;
             PrivateTmp = true;
+          }
+          // lib.optionalAttrs (app.readiness != null) {
+            ExecStartPost = [ (toString (readinessProbe name app)) ];
           };
         }
       ) apps)

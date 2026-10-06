@@ -55,6 +55,12 @@ let
     };
   };
   httpsRuntime = evaluate { demo = httpsApp; };
+  readinessRuntime = evaluate {
+    demo = publicApp // {
+      endpoint.port = 3000;
+      readiness.path = "/health";
+    };
+  };
   endpointRuntime = evaluate {
     demo = publicApp // {
       endpoint.port = 3000;
@@ -112,6 +118,77 @@ let
       ];
     }).config;
   tests = {
+    readinessOptional =
+      defaults.readiness == null
+      && !(runtime.systemd.services.nixploy-app-demo.serviceConfig ? ExecStartPost);
+    readinessDefaults =
+      readinessRuntime.services.nixploy.apps.demo.readiness == {
+        path = "/health";
+        url = "http://127.0.0.1:3000/health";
+        expectedStatus = 200;
+        timeoutSeconds = 30;
+        intervalSeconds = 1;
+        requestTimeoutSeconds = 5;
+      };
+    readinessUnit =
+      builtins.length readinessRuntime.systemd.services.nixploy-app-demo.serviceConfig.ExecStartPost == 1
+      && readinessRuntime.systemd.services.nixploy-app-demo.serviceConfig.User == "nixploy-demo"
+      && readinessRuntime.systemd.services.nixploy-app-demo.serviceConfig.TimeoutStartSec == "35s";
+    readinessExplicitUrl = valid {
+      demo = publicApp // {
+        readiness.url = "https://[::1]:8443/ready?check=1";
+      };
+    };
+    readinessUrlRequired = rejects {
+      demo = publicApp // {
+        readiness = { };
+      };
+    };
+    readinessBadUrl =
+      lib.all
+        (
+          url:
+          rejects {
+            demo = publicApp // {
+              readiness = { inherit url; };
+            };
+          }
+        )
+        [
+          "ftp://localhost/"
+          "http://user:password@localhost/"
+          "http://localhost/a b"
+          "http://localhost/#fragment"
+        ];
+    readinessBadPath = rejects {
+      demo = publicApp // {
+        endpoint.port = 3000;
+        readiness.path = "health";
+      };
+    };
+    readinessBadLimits =
+      lib.all
+        (
+          settings:
+          rejects {
+            demo = publicApp // {
+              readiness = {
+                url = "http://localhost/";
+              }
+              // settings;
+            };
+          }
+        )
+        [
+          { timeoutSeconds = 0; }
+          { timeoutSeconds = 121; }
+          { intervalSeconds = 0; }
+          { requestTimeoutSeconds = 0; }
+          { expectedStatus = 600; }
+        ];
+    readinessChangesGeneration =
+      (builtins.fromJSON readinessRuntime.environment.etc."nixploy/demo.json".text).generation
+      != (builtins.fromJSON endpointRuntime.environment.etc."nixploy/demo.json".text).generation;
     endpointConsumer =
       proxyConfig.services.cloudflared.tunnels.demo.ingress."foo.example.com" == "http://127.0.0.1:3000"
       && proxyConfig.services.nixploy.apps.demo.environment.PORT == "3000";
