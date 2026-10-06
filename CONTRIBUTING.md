@@ -1,87 +1,139 @@
-# Development
+# Contributing
 
-## Demo
+This guide explains how to set up a development checkout, find the relevant code,
+validate changes, submit a pull request, and try the demo with your local changes.
+It also covers the human review and disclosure requirements for AI-assisted
+contributions. For detailed test coverage and commands, see [Testing](docs/testing.md).
 
-See [examples/nixos](examples/nixos) for a standalone infrastructure flake
-that deploys the public Topcoat demo in a persistent NixOS VM. It includes
-build/run instructions and guidance for adapting it to a host.
+## Set up a checkout
 
-## Checks
+Install Nix with flakes enabled, then clone the repository and enter its development
+shell:
 
 ```sh
+git clone https://github.com/nixployhq/nixploy.git
+cd nixploy
 nix develop path:.
+```
+
+The shell provides Rust, Cargo, rustfmt, Clippy, and Git. The flake supports
+`x86_64-linux`, `aarch64-linux`, and `aarch64-darwin`. NixOS VM tests require a
+Linux machine with access to KVM; Rust and module checks also run on supported macOS.
+
+Run the commands below from the repository root. `path:.` includes new files
+before Git tracks them, which is useful when adding modules or tests.
+
+## Find the code
+
+| Location | Purpose |
+| --- | --- |
+| `src/` | Deployment worker, durable state, command execution, and Git credential helper. |
+| `nix/modules/` | Public NixOS options and generated systemd services. |
+| `tests/` | Module checks, NixOS VM scenarios, and the local smoke test. |
+| `examples/nixos/` | Standalone NixOS demo flake. |
+| `docs/` | Configuration and usage guides. |
+
+## Make and check changes
+
+Keep changes focused and update documentation when public options or behavior
+change. Add or adjust tests for changes to deployment, authentication, or service
+behavior. Documentation-only edits need link, example, and formatting checks.
+
+For Rust changes, run:
+
+```sh
 cargo test
 cargo fmt --all -- --check
 cargo clippy --all-targets -- -D warnings
-nix flake check path:.
-nix run path:.#formatter.aarch64-darwin -- flake.nix nix/*.nix nix/modules/*.nix tests/*.nix examples/nixos/*.nix
 ```
 
-The `worker` check builds the Rust package and runs its unit tests.
-`module-interface` evaluates defaults, generated units, credentials, the example,
-and invalid configuration. Both work on macOS without a NixOS VM. The Linux-only
-`lifecycle` check exercises real services, local Git fixtures (including SSH),
-timer updates, failed builds, permissions, GC protection, and pending activation
-recovery across reboot. Run it on an x86_64 Linux host with KVM available:
+For Nix changes, select your current platform and check the module interface:
 
 ```sh
-nix build path:.#checks.x86_64-linux.lifecycle path:.#checks.x86_64-linux.https-auth -L
+nixploy_system=$(nix eval --impure --raw --expr builtins.currentSystem)
+nix build "path:.#checks.${nixploy_system}.module-interface" --no-link
 ```
 
-The `https-auth` check uses a local TLS Git server and runtime-generated tokens.
-It covers authenticated deployment, incorrect and missing credentials, token
-rotation, redirect rejection, and checks for secret leakage. It does not require
-a GitHub account or a real PAT.
-
-The `readiness` check uses a local Git repository and HTTP application. It tests
-delayed startup, pending state on failure, retry without Git access, redirect
-rejection, request and overall timeouts, and readiness gating on manual restarts.
+Format the Nix files you changed with the pinned formatter, for example:
 
 ```sh
-nix build path:.#checks.x86_64-linux.readiness -L
+nix run "path:.#formatter.${nixploy_system}" -- nix/modules/nixploy.nix
 ```
 
-The `rollback` check verifies the startup grace period and failure threshold,
-restoration and readiness of the previous package, failed revision suppression
-across reboot, GC protection, explicit retry, and recovery without Git access.
-Rust tests also cover interrupted and failed rollback, first deployment failures,
-configuration changes, and superseding failed recovery with a new commit.
+Run the VM checks relevant to the change on Linux with KVM. For example, changes
+to activation and rollback should exercise both scenarios:
 
 ```sh
-nix build path:.#checks.x86_64-linux.rollback -L
+nix build "path:.#checks.${nixploy_system}.lifecycle" \
+  "path:.#checks.${nixploy_system}.rollback" --no-link -L
 ```
 
-The `remote-builder` check runs the rollback scenario with a separate builder VM
-configured through `nix.buildMachines` over `ssh-ng`. SSH credentials are generated
-inside the VMs. Local builds and binary substitutes are disabled, and the fixture
-requires a feature available only on the builder. It checks remote build logs and
-the output in the builder's store, then exercises deployment, readiness, rollback,
-reboot, and explicit retry on the app host.
+See [Testing](docs/testing.md) for the check catalogue, the full suite, and a local
+smoke test that does not need a VM.
+
+## Submit a contribution
+
+1. Fork the repository if you do not have write access, and create a branch for
+   your change. For larger changes, use an issue to discuss the proposed behavior
+   and scope before investing in the implementation.
+2. Make the change, update relevant documentation, and run the checks appropriate
+   to it. Review the complete diff yourself before submitting.
+3. Push your branch and open a pull request against `main`.
+4. Explain the problem, what changes for users, and any limitations or tradeoffs.
+   Link related issues and list the checks you actually ran, including their
+   results and any relevant checks you could not run.
+5. Include the AI disclosure below if you used AI assistance, and respond to
+   review feedback with any needed changes or clarification.
+
+Bug reports and documentation improvements are welcome too. For a bug report,
+include reproduction steps, expected and actual behavior, and relevant versions
+and logs. Remove credentials and other secrets before sharing configuration or logs.
+
+## AI-assisted contributions
+
+AI-assisted contributions are welcome, provided the contributor has personally
+reviewed and validated the changes before submitting them. You must understand
+the submitted work, check its correctness, and run appropriate validation. You
+remain responsible for the contribution; an AI review or passing generated tests
+does not replace your own human review.
+
+Fully disclose AI assistance in the pull request, including:
+
+- **Models:** each model used, with its version or identifier when available.
+  If the tool does not expose the model, say so.
+- **Tools and harnesses:** the assistants, agents, editors, CLI tools, or other
+  harnesses used to access or orchestrate those models.
+- **Use:** what each model and tool was used for, such as planning, research,
+  implementation, tests, documentation, debugging, or review. Include assistance
+  used during revisions to the pull request.
+- **Human validation:** what you personally reviewed and how you validated the
+  result, including checks run and any remaining uncertainty.
+
+For example, include this in the pull request description and keep it up to date:
+
+```text
+AI assistance
+- Model(s): <model names and versions/identifiers, or state if unavailable>
+- Tooling/harnesses: <tools used with each model>
+- Used for: <tasks and parts of the contribution assisted by each>
+- Human review and validation: <what I reviewed, checks run, and results>
+- Limitations: <checks not run or unresolved concerns, if any>
+```
+
+## Try the demo
+
+The [standalone demo](examples/nixos) normally uses its pinned GitHub version of
+Nixploy. To try changes from this checkout, run from the repository root on an
+x86_64 Linux host with KVM:
 
 ```sh
-nix build path:.#checks.x86_64-linux.remote-builder -L
+nix build path:./examples/nixos#nixosConfigurations.demo.config.system.build.vm \
+  --override-input nixploy "path:$PWD" --no-write-lock-file \
+  --out-link /tmp/nixploy-demo-vm
+/tmp/nixploy-demo-vm/bin/run-nixploy-demo-vm
 ```
 
-The `secret-providers` check imports pinned sops-nix and agenix modules. It
-creates test identities and encrypted data inside the VM, then verifies Git
-credentials, application environment files, permissions, and rotation through
-both providers. Their source-only flake inputs are used for tests; the Nixploy
-module does not import or enable either provider.
-
-```sh
-nix build path:.#checks.x86_64-linux.secret-providers -L
-```
-
-For a local smoke test on macOS or Linux with Git, Nix, and Python 3 available:
-
-```sh
-cargo build
-python3 tests/local-smoke.py target/debug/nixploy
-```
-
-This uses real local Git repositories, Nix builds, and GC-root registration, with
-only `systemctl` substituted. It never runs garbage collection or deploys an app.
-
-The `path:.` reference includes new files before they are tracked by Git. Replace
-`aarch64-darwin` in the formatting command with `x86_64-linux` or `aarch64-linux`
-as needed. Once files are tracked, `nix fmt` with the same file arguments works.
+This overrides the module source for that build without changing the example's
+lockfile. The VM creates a persistent disk in your working directory and serves
+the demo at `http://127.0.0.1:8080`. See the [example instructions](examples/nixos/README.md)
+for configuration and VM usage.

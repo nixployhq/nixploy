@@ -17,7 +17,7 @@ nix build path:.#nixosConfigurations.demo.config.system.build.vm
 
 Open http://127.0.0.1:8080 once the first deployment finishes. Initial startup
 requires internet access to fetch and build the app. Deployment logs appear in
-the VM console. The app polls `main` every 15 seconds after each attempt.
+the VM console. The app polls `main` every minute after each attempt.
 
 The VM keeps its disk in `nixploy-demo.qcow2` in the working directory. Run the
 launcher under a service manager if you want it to remain running after logout.

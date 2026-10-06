@@ -60,7 +60,7 @@ all builds through its daemon, not just Nixploy. Declare `supportedFeatures` on 
 build-machine entry only for features that the builder actually provides.
 
 See the [Nix distributed-build guide](https://nix.dev/tutorials/nixos/distributed-builds-setup.html)
-for the underlying setup. See [Contributing](../CONTRIBUTING.md) for the
+for the underlying setup. See [Testing](testing.md) for the
 remote-builder integration check.
 
 See [secret providers](secrets.md) for provisioning runtime key files.
