@@ -9,39 +9,98 @@ configuration defines where and how it runs.
 
 ## Quick start
 
-Add Nixploy to your NixOS flake inputs:
+Start with your existing NixOS flake and `configuration.nix`.
 
-```nix
-inputs.nixploy.url = "github:nixployhq/nixploy";
-```
+1. Add Nixploy to your flake's `inputs`:
 
-Include `nixploy` in your flake's `outputs` arguments, then add its module and
-an application to your host's `modules` list:
+   ```nix
+   nixploy = {
+     url = "github:nixployhq/nixploy";
+     inputs.nixpkgs.follows = "nixpkgs";
+   };
+   ```
 
-```nix
-nixpkgs.lib.nixosSystem {
-  system = "x86_64-linux";
-  modules = [
-    ./configuration.nix
-    nixploy.nixosModules.default
-    {
-      services.nixploy.apps.demo = {
-        repository = "https://github.com/nixployhq/demo.git";
-        executable = "nixploy-demo";
-        environment = {
-          HOST = "0.0.0.0";
-          PORT = "3000";
-        };
-      };
-    }
-  ];
-}
-```
+2. Include `nixploy` in your `outputs` arguments:
+   ```nix
+   outputs = { nixpkgs, nixploy, ... }: { ... };
+   ```
 
-Rebuild and switch your NixOS configuration. Nixploy will build and start the
+3. Add `nixploy.nixosModules.default` to your host's `modules` list.
+
+   ```nix
+   nixosConfigurations.my-host = nixpkgs.lib.nixosSystem {
+     system = "x86_64-linux";
+     modules = [
+       ./configuration.nix
+       nixploy.nixosModules.default
+     ];
+   };
+   ```
+
+   Use your existing host name and platform, and keep any other modules you
+   already import.
+
+4. Define an application in `configuration.nix` or as an inline module:
+
+   ```nix
+   services.nixploy.apps.demo = {
+     repository = "https://github.com/nixployhq/demo.git";
+     executable = "nixploy-demo";
+     environment = {
+       HOST = "0.0.0.0";
+       PORT = "3000";
+     };
+   };
+   ```
+
+5. Rebuild and switch, replacing `my-host` with your configuration name:
+
+   ```sh
+   sudo nixos-rebuild switch --flake .#my-host
+   ```
+
+Nixploy will build and start the
 [demo application](https://github.com/nixployhq/demo), then check for updates
 every minute. Configure your host's firewall or reverse proxy to make the
 application reachable.
+
+### Example flake.nix
+
+Here is a complete flake putting those steps together with an inline app module.
+Keep your existing `configuration.nix`, and replace `my-host` and `x86_64-linux`
+with your host's configuration name and platform:
+
+```nix
+{
+  inputs = {
+    nixpkgs.url = "github:NixOS/nixpkgs/nixos-unstable";
+    nixploy = {
+      url = "github:nixployhq/nixploy";
+      inputs.nixpkgs.follows = "nixpkgs";
+    };
+  };
+
+  outputs = { nixpkgs, nixploy, ... }: {
+    nixosConfigurations.my-host = nixpkgs.lib.nixosSystem {
+      system = "x86_64-linux";
+      modules = [
+        ./configuration.nix
+        nixploy.nixosModules.default
+        {
+          services.nixploy.apps.demo = {
+            repository = "https://github.com/nixployhq/demo.git";
+            executable = "nixploy-demo";
+            environment = {
+              HOST = "0.0.0.0";
+              PORT = "3000";
+            };
+          };
+        }
+      ];
+    };
+  };
+}
+```
 
 For your own app, set `repository` and `executable`. The repository must commit
 a `flake.lock` and expose `packages.<system>.<package>` with an `out` output
@@ -51,343 +110,66 @@ For a complete infrastructure flake with a runnable NixOS VM, see
 [examples/nixos](examples/nixos). It imports Nixploy from GitHub and includes
 a lockfile.
 
-## App options
+## How it works
 
-Options live under `services.nixploy.apps.<name>`.
+Nixploy polls the configured branch, builds the exact commit through Nix, and
+restarts the app's systemd service when the package is ready. Fetch or build
+failures leave the running app untouched. An unchanged commit and configuration
+do not restart it.
 
-| App option | Default | Contract |
-| --- | --- | --- |
-| `enable` | `true` | Enable deployment and runtime units. |
-| `repository` | Required | HTTPS URL, SSH URL, or `user@host:path`. |
-| `branch` | `"main"` | Branch name relative to `refs/heads/`. |
-| `package` | `"default"` | Name under `packages.<host-system>`, not a full attribute path. |
-| `executable` | Required | Binary name in the package's `bin/`, not a path or command. |
-| `pollInterval` | `"1min"` | Delay after an attempt completes; positive integer with `s`, `min`, `h`, or `d`. |
-| `git.https.username` | `null` | HTTPS username expected by your Git provider; required with `tokenFile`. |
-| `git.https.tokenFile` | `null` | Absolute string path to a file containing an HTTPS access token. |
-| `git.privateKeyFile` | `null` | Existing SSH private key, as an absolute string path. |
-| `git.knownHostsFile` | `null` | Existing known-hosts file, as an absolute string path; required for enabled SSH apps. |
-| `endpoint` | `null` | Optional HTTP(S) endpoint; requires a port and supplies default `HOST` and `PORT` environment variables. |
-| `endpoint.scheme` | `"http"` | `"http"` or `"https"`. |
-| `endpoint.host` | `"127.0.0.1"` | Connectable hostname or IP; IPv6 without brackets. |
-| `endpoint.port` | Required when set | Integer from 1 to 65535. |
-| `endpoint.url` | Derived, read-only | URL built from the endpoint scheme, host, and port. |
-| `environment` | `{}` without an endpoint | Non-secret environment variables with string values; explicit values override endpoint defaults. |
-| `readiness` | `null` | Optional HTTP(S) startup probe. |
-| `readiness.path` | `"/"` | Path appended to the endpoint URL. |
-| `readiness.url` | Endpoint URL + path | Explicit probe URL; required without an endpoint. Overrides `path`. |
-| `readiness.expectedStatus` | `200` | Exact HTTP status required, from 100 to 599. |
-| `readiness.timeoutSeconds` | `30` | Total readiness deadline, from 1 to 120 seconds. |
-| `readiness.startPeriodSeconds` | `10` | Startup grace period, from 0 to 119 seconds; must be shorter than the total deadline. |
-| `readiness.failureThreshold` | `3` | Failed probes after the grace period that fail startup, from 1 to 100. |
-| `readiness.intervalSeconds` | `2` | Delay between failed attempts, from 1 to 60 seconds. |
-| `readiness.requestTimeoutSeconds` | `5` | Per-request timeout, from 1 to 30 seconds, bounded by the total deadline. |
-| `rollback.enable` | Enabled with readiness | Restore the last successful package after failed activation and suppress repeated attempts of the failed revision/configuration. |
+Each app has its own service user. You can use standard NixOS configuration for
+persistent data, secrets, reverse proxies, and remote builders.
 
-An empty app set is the default. There is no global enable option. App names
-start with a letter or digit and contain only letters, digits, `_`, or `-`.
-Package names allow letters, digits, `_`, `+`, and `-`; executable names also
-allow dots, except `.` and `..`.
-
-## Endpoint references
-
-Declare an endpoint once and reuse its URL in other NixOS modules:
-
-```nix
-{ config, ... }:
-{
-  services.nixploy.apps.my-app = {
-    repository = "https://github.com/your-org/your-app.git";
-    executable = "your-app";
-    endpoint = {
-      host = "127.0.0.1";
-      port = 3000;
-    };
-  };
-
-  # Add to an existing cloudflared tunnel configuration:
-  services.cloudflared.tunnels."your-tunnel-id".ingress."foo.example.com" =
-    config.services.nixploy.apps.my-app.endpoint.url;
-}
-```
-
-The derived URL is `http://127.0.0.1:3000`. An IPv6 host such as `::1` produces
-`http://[::1]:3000`. Configure the tunnel's credentials and other required settings
-through the [NixOS cloudflared module](https://github.com/NixOS/nixpkgs/blob/nixos-unstable/nixos/modules/services/networking/cloudflared.nix).
-
-Setting an endpoint supplies `HOST` and `PORT` to the application (in this example,
-`127.0.0.1` and `3000`). The application must respect those environment variables;
-configure apps that use different settings explicitly. Without an endpoint,
-Nixploy adds neither variable.
-
-Explicit `environment.HOST` and `environment.PORT` values override these defaults.
-For example, set `environment.HOST = "0.0.0.0";` to listen on all interfaces while
-keeping the endpoint host at `127.0.0.1` for a local proxy. Overrides do not change
-the derived URL, so keep it consistent with where the application is reachable.
-
-The endpoint does not configure TLS, open firewall ports, install a proxy, or enable
-readiness checks. Endpoint changes that alter the application's environment trigger a
-deployment on the next update. URL changes also trigger deployment when used by
-a readiness probe; otherwise the URL is only an output for consumers.
-
-## Readiness checks
-
-Opt into an HTTP(S) startup probe for an app that exposes a readiness route:
+For apps with an HTTP readiness route, enable startup checks and automatic
+package rollback:
 
 ```nix
 services.nixploy.apps.my-app = {
   repository = "https://github.com/your-org/your-app.git";
   executable = "your-app";
   endpoint.port = 3000;
-  readiness = {
-    path = "/health";
-    expectedStatus = 200;
-    timeoutSeconds = 30;
-    startPeriodSeconds = 10;
-    failureThreshold = 3;
-    intervalSeconds = 2;
-    requestTimeoutSeconds = 5;
-  };
+  readiness.path = "/health";
 };
 ```
 
-Nixploy sends GET requests to `http://127.0.0.1:3000/health` until one completes
-with the expected status. Failures from probes started during the first 10 seconds
-do not count; success during this period completes readiness immediately. After
-the grace period, three consecutive failed probes fail startup. The 30-second
-deadline includes the grace period, requests, and retry delays and can expire
-before the failure threshold is reached. These are probe attempts within one
-startup, not three service restarts. To use a separate management
-port or an app without an endpoint, set `readiness.url` to its full HTTP(S) URL.
-Choose an address that reaches this app directly; a shared proxy could answer
-for another instance. Probe URLs are non-secret configuration stored in the Nix store.
+The endpoint defaults `HOST` to `127.0.0.1` and `PORT` to `3000`; your app must
+respect those variables. Readiness requires HTTP 200. Failed activation restores
+the previous successful package when available. Rollback does not undo application
+data or database migrations. See [readiness and rollback](docs/readiness.md) for
+timeouts, failure handling, and retrying a rejected revision.
 
-The probe runs as the app's service user through systemd's `ExecStartPost`, on
-every start, including boot and automatic restarts. Deployment becomes active
-only after the probe succeeds. HTTPS uses the system CA bundle and verifies
-certificates; redirects are not followed and proxy environment variables are ignored.
-
-Failed readiness fails service startup. With readiness configured, automatic
-rollback is enabled by default. Nixploy restores the previous successful package,
-restarts it, and requires its startup checks to pass. The update command still
-reports failure so the failed deployment remains visible in the journal.
-
-The failed revision and configuration are recorded in `state.json` as `failed`.
-Ordinary polls skip that combination; a newer commit or a configuration change
-can deploy normally. The latest failed package remains rooted for an explicit
-retry. To retry after fixing an external dependency, run:
-
-```sh
-sudo nixploy retry /etc/nixploy/my-app.json
-sudo systemctl start nixploy-update-my-app.service
-```
-
-The first command queues a retry under the deployment lock. The regular updater
-runs it with its normal credentials, either on the next poll or when started
-with the second command. It does not change which Git branch or revision is desired.
-
-If rollback also fails, `recovery` remains recorded and the next update attempts
-recovery before fetching Git. A newer commit can supersede failed recovery. With
-no previous distinct package, Nixploy stops the failed app and removes its profile
-so it is not selected at the next boot. `active` records the last successful
-deployment; systemd reports current service health.
-
-Rollback restores only the package. It uses the **current** NixOS environment,
-secrets, service settings, and readiness probe; it does not undo application data
-or database migrations. Recovery decisions survive worker interruption and reboot.
-This is restart-based recovery, not a zero-downtime rollout.
-
-Set `rollback.enable = false;` to retain the earlier retry behavior: failed
-activation stays `pending`, and subsequent updates retry it. Without readiness,
-rollback defaults to disabled but can be enabled for process-start failures.
-
-These are startup checks, not continuous health monitoring. Without `readiness`,
-activation still requires only a successful process start. Changing readiness
-settings changes the deployment configuration and causes activation to be retried.
-
-## Private repositories
-
-### HTTPS tokens
-
-Use an access token with permission to read the repository:
-
-```nix
-services.nixploy.apps.my-app = {
-  repository = "https://github.com/your-org/your-app.git";
-  executable = "your-app";
-  git.https = {
-    username = "your-git-username";
-    tokenFile = "/run/secrets/my-app-git-token";
-  };
-};
-```
-
-These options are provider-independent. Set the username required by your Git
-provider and provision the token file separately, for example with sops-nix or
-agenix. The file must contain only the token on a single line; a trailing newline
-is allowed. Use a quoted absolute path string so its contents stay out of the
-Nix store. Both `username` and `tokenFile` are required.
-
-Nixploy loads the file through systemd credentials for each update and supplies
-the token as the HTTPS password through a repository-scoped Git credential
-helper. Tokens are not put in repository URLs, command arguments, environment
-variables, or deployment state. Replacing the file rotates the token on the next
-update; automatic token issuance and renewal are not provided.
-
-Authenticated HTTPS URLs must not contain embedded credentials, a query, or a
-fragment. Redirects are disabled: use the repository’s canonical clone URL. HTTPS
-token settings cannot be combined with SSH credential settings. These credentials
-authenticate the app repository, not its private flake inputs.
-
-### SSH keys
-
-For an SSH repository, provide a known-hosts file and, when needed, a private key:
-
-```nix
-services.nixploy.apps.my-app = {
-  repository = "git@github.com:your-org/your-app.git";
-  executable = "your-app";
-  git = {
-    privateKeyFile = "/run/secrets/app-deploy-key";
-    knownHostsFile = "/etc/ssh/ssh_known_hosts";
-  };
-};
-```
-
-Provision these files separately. Use absolute path **strings**, as above, to
-keep secret contents out of the Nix store. Nixploy loads SSH credentials through
-systemd and enforces host verification. If `privateKeyFile` is null, SSH
-credentials must already be available to the worker. These settings authenticate
-the application repository; private flake inputs need separate authentication.
-
-See [examples/nixos/configuration.nix](examples/nixos/configuration.nix) for a configuration
-with explicit defaults.
-
-## Secret providers
-
-Nixploy works with sops-nix, agenix, and other tools that provision runtime files.
-Pass the provider’s decrypted path to the credential option, for example:
-
-```nix
-git.https.tokenFile = config.sops.secrets.git-token.path;
-# Or: config.age.secrets.git-token.path
-```
-
-See [Secret providers](docs/secrets.md) for complete configuration snippets,
-application secrets, startup ordering, and rotation.
-
-## Application data and secrets
-
-Use standard NixOS systemd options to provide writable storage and runtime secrets:
-
-```nix
-systemd.services.nixploy-app-my-app.serviceConfig = {
-  StateDirectory = "my-app";
-  WorkingDirectory = "/var/lib/my-app";
-  EnvironmentFile = "/run/secrets/my-app-env";
-};
-```
-
-Applications run with `ProtectSystem=strict`; use a separate `StateDirectory`
-for writable data. Keep secrets out of the `environment` option, whose values
-are stored in the Nix store. The host configuration manages secret provisioning,
-network access, and reverse proxies.
-
-## Deployment behavior
-
-- The timer first runs 30 seconds after boot, then waits `pollInterval` after
-  each completed attempt. Each build uses an exact Git commit.
-- Unchanged commits do not restart the app. Changes to its Nixploy configuration
-  can trigger deployment of the same commit with the new settings.
-- Fetch and build failures leave the running release untouched. Failed activation
-  triggers rollback when enabled; otherwise it remains pending for retry.
-- The selected release starts again after reboot. Package roots protect active
-  and pending releases, rollback targets, and the latest failed release from Nix
-  garbage collection.
-
-The update worker runs as root and uses the Nix daemon; applications run as
-restricted users named `nixploy-<name>`. Only configure repositories you trust
-to supply your application.
-
-## Remote builders
-
-Nixploy uses the host's Nix daemon and standard `nix.buildMachines` settings.
-Configure the deployment host with a builder capable of building packages for
-the app host's platform:
-
-```nix
-{
-  nix.distributedBuilds = true;
-  nix.settings.builders-use-substitutes = true;
-  nix.buildMachines = [{
-    hostName = "builder.example.com";
-    system = "x86_64-linux";
-    protocol = "ssh-ng";
-    sshUser = "nixbuilder";
-    sshKey = "/run/secrets/build-key";
-    maxJobs = 4;
-  }];
-
-  programs.ssh.knownHosts.buildbox = {
-    hostNames = [ "builder.example.com" ];
-    publicKey = "ssh-ed25519 REPLACE_WITH_BUILDER_HOST_PUBLIC_KEY";
-  };
-}
-```
-
-Provision the private key outside the Nix store, readable by root before builds
-start. It is the Nix daemon's builder credential, separate from the application's
-Git credential. Replace the host key with the builder's verified public host key.
-
-On a NixOS builder, enable SSH and authorize the deployment host's build key:
-
-```nix
-{
-  services.openssh.enable = true;
-  users.groups.nixbuilder = {};
-  users.users.nixbuilder = {
-    isSystemUser = true;
-    group = "nixbuilder";
-    useDefaultShell = true;
-    openssh.authorizedKeys.keys = [
-      "ssh-ed25519 REPLACE_WITH_DEPLOYMENT_HOST_BUILD_PUBLIC_KEY"
-    ];
-  };
-  nix.settings.trusted-users = [ "nixbuilder" ];
-}
-```
-
-Nix trusted users have effectively root-level access; reserve this account for
-trusted deployment hosts. The builder receives application source and build
-inputs. Git checkout and flake evaluation stay on the deployment host, and Nix
-copies the built output back before Nixploy activates it. Readiness and rollback
-run on the deployment host.
-
-Nix may still build locally when local jobs are enabled. To require remote builds
-for testing, set `nix.settings.max-jobs = 0;` on the deployment host. This affects
-all builds through its daemon, not just Nixploy. Declare `supportedFeatures` on a
-build-machine entry only for features that the builder actually provides.
-
-See the [Nix distributed-build guide](https://nix.dev/tutorials/nixos/distributed-builds-setup.html)
-for the underlying setup. The `remote-builder` integration check uses separate
-deployment and builder VMs, runtime-generated SSH credentials, disabled local
-builds, and a package requiring a builder-only feature.
-
-## Operations
+## Usage
 
 For an app named `my-app`:
 
 ```sh
+# Inspect the app and update schedule.
 systemctl status nixploy-app-my-app.service
 systemctl status nixploy-update-my-app.timer
+
+# Read application and deployment logs.
+journalctl -u nixploy-app-my-app.service
 journalctl -u nixploy-update-my-app.service
+
+# Check for an update now.
 sudo systemctl start nixploy-update-my-app.service
 ```
 
-Deployment state and package roots live in `/var/lib/nixploy/<name>`. Disabling
-or removing an app retains this directory. Once its units are stopped, remove
-the directory to release its package roots; Nix garbage collection can then
-reclaim unreferenced outputs. Keep application data in its own directory.
+The default branch is `main`, package is `default`, and poll interval is `1min`.
+Set `branch`, `package`, or `pollInterval` on the app to change them. There is no
+global enable switch; defining an app enables it.
+
+## Documentation
+
+| Guide | Covers |
+| --- | --- |
+| [Configuration reference](docs/configuration.md) | App options, defaults, and accepted values. |
+| [Endpoints and reverse proxies](docs/endpoints.md) | Reusing endpoint URLs, Cloudflared, and environment overrides. |
+| [Private repositories](docs/authentication.md) | HTTPS tokens, SSH keys, and host verification. |
+| [Secret providers](docs/secrets.md) | sops-nix, agenix, runtime secrets, and rotation. |
+| [Readiness and rollback](docs/readiness.md) | Startup probes, automatic rollback, and explicit retries. |
+| [Operations and application state](docs/operations.md) | Service management, persistent data, and deployment state. |
+| [Remote builders](docs/remote-builders.md) | Build-box configuration using `nix.buildMachines`. |
 
 ## Current limitations
 

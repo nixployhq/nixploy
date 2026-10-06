@@ -1,5 +1,7 @@
 # Secret providers
 
+[Back to Nixploy](../README.md)
+
 Nixploy consumes runtime files. Your secret provider decrypts or fetches them;
 Nixploy loads Git credentials using systemd `LoadCredential`. No provider-specific
 Nixploy options or plugins are required.
