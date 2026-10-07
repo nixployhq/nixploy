@@ -154,6 +154,14 @@ in
             ProtectSystem = "strict";
             ProtectHome = true;
             PrivateTmp = true;
+            RestrictSUIDSGID = lib.mkDefault true;
+            CapabilityBoundingSet = lib.mkDefault "";
+            RestrictAddressFamilies = lib.mkDefault [
+              "AF_UNIX"
+              "AF_INET"
+              "AF_INET6"
+            ];
+            UMask = lib.mkDefault "0077";
           }
           // lib.optionalAttrs (app.readiness != null) {
             ExecStartPost = [ (toString (readinessProbe name app)) ];

@@ -61,6 +61,36 @@ for writable data. Keep secrets out of the `environment` option, whose values
 are stored in the Nix store. The host configuration manages secret provisioning,
 network access, and reverse proxies.
 
+## Application service restrictions
+
+Application services default to:
+
+```nix
+RestrictSUIDSGID = true;
+CapabilityBoundingSet = "";
+RestrictAddressFamilies = [ "AF_UNIX" "AF_INET" "AF_INET6" ];
+UMask = "0077";
+```
+
+These settings prevent creating SUID/SGID files, remove Linux capabilities, allow
+Unix/IPv4/IPv6 sockets, and make newly created files private to the service user
+by default. An app that shares files with another service may need a different
+umask; one that uses other socket families needs to allow those explicitly.
+
+Each setting uses `lib.mkDefault`, so ordinary per-app systemd configuration
+overrides it without `lib.mkForce`. For example:
+
+```nix
+systemd.services.nixploy-app-my-app.serviceConfig = {
+  UMask = "0027";
+  RestrictAddressFamilies = [ "AF_UNIX" "AF_INET" "AF_INET6" "AF_NETLINK" ];
+};
+```
+
+An override replaces the default list, so include every socket family the app
+needs. Capability bounding sets limit capabilities; granting a non-root app a
+capability also requires an appropriate `AmbientCapabilities` setting.
+
 ## Deployment behavior
 
 - The timer first runs 30 seconds after boot, then waits `pollInterval` after

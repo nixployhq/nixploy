@@ -1,12 +1,14 @@
 { nixpkgs }:
 let
   inherit (nixpkgs) lib;
-  evaluate =
-    apps:
+  evaluate = apps: evaluateWith apps { };
+  evaluateWith =
+    apps: extra:
     (lib.nixosSystem {
       system = "x86_64-linux";
       modules = [
         ../nix/modules/nixploy.nix
+        extra
         {
           services.nixploy.apps = apps;
           system.stateVersion = "26.05";
@@ -40,6 +42,14 @@ let
   };
   defaults = (evaluate { demo = publicApp; }).services.nixploy.apps.demo;
   runtime = evaluate { demo = publicApp; };
+  hardeningOverrideRuntime = evaluateWith { demo = publicApp; } {
+    systemd.services.nixploy-app-demo.serviceConfig = {
+      RestrictSUIDSGID = false;
+      CapabilityBoundingSet = [ "CAP_NET_BIND_SERVICE" ];
+      RestrictAddressFamilies = [ "AF_UNIX" ];
+      UMask = "0027";
+    };
+  };
   privateRuntime = evaluate {
     demo = sshApp // {
       git = {
@@ -435,6 +445,27 @@ let
       runtime.systemd.services.nixploy-app-demo.serviceConfig.User == "nixploy-demo"
       && runtime.systemd.services.nixploy-update-demo.serviceConfig.User == "root"
       && runtime.environment.etc."nixploy/demo.json".mode == "0600";
+    appHardeningDefaults =
+      let
+        service = runtime.systemd.services.nixploy-app-demo.serviceConfig;
+      in
+      service.RestrictSUIDSGID
+      && service.CapabilityBoundingSet == ""
+      &&
+        service.RestrictAddressFamilies == [
+          "AF_UNIX"
+          "AF_INET"
+          "AF_INET6"
+        ]
+      && service.UMask == "0077";
+    appHardeningOverrides =
+      let
+        service = hardeningOverrideRuntime.systemd.services.nixploy-app-demo.serviceConfig;
+      in
+      !service.RestrictSUIDSGID
+      && service.CapabilityBoundingSet == [ "CAP_NET_BIND_SERVICE" ]
+      && service.RestrictAddressFamilies == [ "AF_UNIX" ]
+      && service.UMask == "0027";
     initialBootGuard =
       runtime.systemd.services.nixploy-app-demo.unitConfig.ConditionFileIsExecutable
       == "/var/lib/nixploy/demo/profile/bin/web-server";
