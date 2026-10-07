@@ -27,7 +27,7 @@ before Git tracks them, which is useful when adding modules or tests.
 
 | Location | Purpose |
 | --- | --- |
-| `src/` | Deployment worker, durable state, command execution, and Git credential helper. |
+| `src/` | Public CLI, deployment worker, hook receiver, durable state, and Git credential helper. |
 | `nix/modules/` | Public NixOS options and generated systemd services. |
 | `tests/` | Module checks, NixOS VM scenarios, and the local smoke test. |
 | `examples/nixos/` | Standalone NixOS demo flake. |

@@ -57,6 +57,18 @@ let
         example = "30s";
         description = "Delay after an update attempt completes. Positive integer followed by s, min, h, or d.";
       };
+      webhook = {
+        enable = mkOption {
+          type = types.bool;
+          default = false;
+          description = "Enable authenticated POST requests to /hooks/<app> on the shared webhook receiver. Polling remains enabled.";
+        };
+        tokenFile = mkOption {
+          type = types.nullOr absoluteFile;
+          default = null;
+          description = "Absolute string path to a runtime bearer token file (32 to 256 printable non-whitespace ASCII characters). Null generates a persistent token on the host. Restart nixploy-webhooks.service after changing a managed token.";
+        };
+      };
       endpoint = mkOption {
         default = null;
         description = "Optional connection endpoint for proxies and other consumers. Supplies default HOST and PORT environment variables; the application must respect them. Does not open firewall ports.";
@@ -206,7 +218,10 @@ let
   };
 in
 {
-  imports = [ ./runtime.nix ];
+  imports = [
+    ./runtime.nix
+    ./webhook.nix
+  ];
 
   options.services.nixploy.apps = mkOption {
     type = types.attrsOf (types.submodule appModule);

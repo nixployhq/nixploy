@@ -50,13 +50,14 @@ can deploy normally. The latest failed package remains rooted for an explicit
 retry. To retry after fixing an external dependency, run:
 
 ```sh
-sudo nixploy retry /etc/nixploy/my-app.json
-sudo systemctl start nixploy-update-my-app.service
+sudo nixploy app retry my-app
 ```
 
-The first command queues a retry under the deployment lock. The regular updater
-runs it with its normal credentials, either on the next poll or when started
-with the second command. It does not change which Git branch or revision is desired.
+The command queues a retry under the deployment lock and schedules the regular
+updater immediately with its normal credentials. It returns after scheduling,
+without waiting for deployment to finish. Follow progress with
+`journalctl -fu nixploy-update-my-app.service`. It does not change which Git branch
+or revision is desired.
 
 If rollback also fails, `recovery` remains recorded and the next update attempts
 recovery before fetching Git. A newer commit can supersede failed recovery. With

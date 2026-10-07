@@ -1,6 +1,6 @@
 """Exercise real Git, Nix builds and GC roots; substitute only systemctl.
 
-Run after cargo build: python3 tests/local-smoke.py target/debug/nixploy
+Run after cargo build: python3 tests/local-smoke.py target/debug/nixploy-worker
 This creates temporary Git/state directories and tiny outputs in the Nix store.
 It never runs garbage collection or contacts an application repository.
 """
@@ -80,7 +80,7 @@ with tempfile.TemporaryDirectory(prefix="nixploy-smoke-") as temporary:
                        "NIXPLOY_TEST_CALLS": str(calls), "NIXPLOY_TEST_FAIL": str(failure)}
 
     def deploy(success=True):
-        result = subprocess.run([worker, str(config)], env=env, text=True, capture_output=True)
+        result = subprocess.run([worker, "update", str(config)], env=env, text=True, capture_output=True)
         if (result.returncode == 0) != success:
             raise AssertionError(result.stderr)
 

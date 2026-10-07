@@ -42,8 +42,8 @@ assert machine.succeed("readlink /var/lib/nixploy/demo/profile").strip() == firs
 
 # Explicit retry is queued through the CLI and uses the normal updater context.
 machine.succeed("echo repair > /var/lib/readiness/mode")
-machine.succeed("nixploy retry /etc/nixploy/demo.json")
-machine.succeed("systemctl start nixploy-update-demo.service")
+machine.succeed("nixploy app retry demo")
+machine.wait_until_succeeds("jq -e ' .failed == null and .pending == null' /var/lib/nixploy/demo/state.json")
 assert state()["failed"] is None
 assert state()["active"]["output"] == failed["output"]
 assert state()["pending"] is None

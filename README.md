@@ -166,6 +166,7 @@ global enable switch; defining an app enables it.
 | [Configuration reference](docs/configuration.md) | App options, defaults, and accepted values. |
 | [Endpoints and reverse proxies](docs/endpoints.md) | Reusing endpoint URLs, Cloudflared, and environment overrides. |
 | [Private repositories](docs/authentication.md) | HTTPS tokens, SSH keys, and host verification. |
+| [Deploy hooks](docs/webhooks.md) | CI-triggered updates, generated tokens, and rotation. |
 | [Secret providers](docs/secrets.md) | sops-nix, agenix, runtime secrets, and rotation. |
 | [Readiness and rollback](docs/readiness.md) | Startup probes, automatic rollback, and explicit retries. |
 | [Operations and application state](docs/operations.md) | Service management, persistent data, and deployment state. |
@@ -175,7 +176,8 @@ global enable switch; defining an app enables it.
 
 Nixploy is an initial MVP:
 
-- Deployment targets must run NixOS. Updates use polling; there are no webhooks.
+- Deployment targets must run NixOS. Updates use polling with optional generic
+  deploy hooks; provider-specific event signatures are not supported yet.
 - Optional HTTP(S) readiness probes gate startup and enable package rollback.
   There is no continuous health monitoring or zero-downtime rollout.
 - Repository authentication supports HTTPS tokens and SSH keys. Provider-specific

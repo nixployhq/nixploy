@@ -55,6 +55,21 @@ let
     };
   };
   httpsRuntime = evaluate { demo = httpsApp; };
+  webhookRuntime = evaluate {
+    demo = publicApp // {
+      webhook.enable = true;
+    };
+    managed = publicApp // {
+      webhook = {
+        enable = true;
+        tokenFile = "/run/secrets/hook";
+      };
+    };
+    disabled = publicApp // {
+      enable = false;
+      webhook.enable = true;
+    };
+  };
   readinessRuntime = evaluate {
     demo = publicApp // {
       endpoint.port = 3000;
@@ -118,6 +133,31 @@ let
       ];
     }).config;
   tests = {
+    webhookOptional =
+      !defaults.webhook.enable
+      && defaults.webhook.tokenFile == null
+      && !(runtime.systemd.services ? nixploy-webhooks);
+    webhookCredentials =
+      webhookRuntime.systemd.services.nixploy-webhooks.serviceConfig.LoadCredential == [
+        "demo:/var/lib/nixploy-webhooks/tokens/demo.token"
+        "managed:/run/secrets/hook"
+      ];
+    webhookUnprivileged =
+      webhookRuntime.systemd.services.nixploy-webhooks.serviceConfig.User == "_nixploy-webhooks";
+    webhookQueue =
+      webhookRuntime.systemd.paths.nixploy-webhook-demo.pathConfig.Unit == "nixploy-update-demo.service"
+      &&
+        webhookRuntime.systemd.paths.nixploy-webhook-demo.pathConfig.PathExists
+        == "/var/lib/nixploy-webhooks/queue/demo"
+      && !(webhookRuntime.systemd.paths ? nixploy-webhook-disabled);
+    webhookDoesNotRedeploy =
+      webhookRuntime.environment.etc."nixploy/demo.json".text
+      == runtime.environment.etc."nixploy/demo.json".text;
+    webhookRelativeToken = rejects {
+      demo = publicApp // {
+        webhook.tokenFile = "relative";
+      };
+    };
     readinessOptional =
       defaults.readiness == null
       && !(runtime.systemd.services.nixploy-app-demo.serviceConfig ? ExecStartPost);

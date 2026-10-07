@@ -16,6 +16,28 @@ or removing an app retains this directory. Once its units are stopped, remove
 the directory to release its package roots; Nix garbage collection can then
 reclaim unreferenced outputs. Keep application data in its own directory.
 
+## Command-line interface
+
+Use `nixploy --help` to discover commands and append `--help` at any level:
+
+```sh
+nixploy app retry --help
+nixploy deploy-hook token --help
+sudo nixploy app retry my-app
+sudo nixploy deploy-hook token show my-app
+sudo nixploy deploy-hook token rotate my-app
+```
+
+Commands take the app name from `services.nixploy.apps`, rather than a configuration
+file path. Retry schedules the updater and returns without waiting for deployment.
+Token retrieval prints only the secret to stdout. See [deploy hooks](webhooks.md)
+for setup and CI integration.
+
+Systemd invokes `nixploy-worker` internally. Apply the updated NixOS configuration
+to install its service definitions alongside the new CLI. The previous
+`nixploy retry <config-path>`, `webhook-token`, and `rotate-webhook-token` forms
+have been replaced by the commands above.
+
 ## Application data and secrets
 
 Use standard NixOS systemd options to provide writable storage and runtime secrets:

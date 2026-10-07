@@ -68,6 +68,7 @@
         }
         // nixpkgs.lib.optionalAttrs pkgs.stdenv.hostPlatform.isLinux {
           lifecycle = import ./tests/vm.nix { inherit pkgs; };
+          webhook = import ./tests/webhook.nix { inherit pkgs; };
           readiness = import ./tests/readiness.nix { inherit pkgs; };
           rollback = import ./tests/readiness.nix {
             inherit pkgs;

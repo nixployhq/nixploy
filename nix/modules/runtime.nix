@@ -81,7 +81,10 @@ let
     generation = builtins.hashString "sha256" (
       builtins.toJSON {
         # Endpoint metadata alone does not change the deployed application.
-        app = lib.removeAttrs app [ "endpoint" ];
+        app = lib.removeAttrs app [
+          "endpoint"
+          "webhook"
+        ];
         inherit (config.systemd.services."nixploy-app-${name}") serviceConfig environment;
       }
     );
@@ -203,11 +206,16 @@ in
           serviceConfig = {
             Type = "oneshot";
             User = "root";
-            ExecStart = "${worker}/bin/nixploy ${configFile name}";
+            ExecStart = "${worker}/bin/nixploy-worker update ${configFile name}";
             TimeoutStartSec = "75min";
             TimeoutStopSec = "15s";
             KillMode = "control-group";
             UMask = "0022";
+            # Consume before Git resolution. A request arriving while this update
+            # runs remains present, so the path unit schedules a follow-up.
+            ExecStartPre = lib.optionals app.webhook.enable [
+              "${pkgs.coreutils}/bin/rm -f /var/lib/nixploy-webhooks/queue/${name}"
+            ];
             PrivateTmp = true;
             LoadCredential =
               lib.optional (app.git.privateKeyFile != null) "private-key:${app.git.privateKeyFile}"

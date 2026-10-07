@@ -17,6 +17,7 @@ Checks are exposed as `checks.<system>.<name>` in the root flake.
 | --- | --- | --- |
 | `worker` | Supported Linux or macOS | Builds the Rust package through Nix and runs its unit tests. |
 | `module-interface` | Supported Linux or macOS | Evaluates options, defaults, generated units, credentials, examples, and invalid configuration. |
+| `webhook` | Linux with KVM | HTTP authentication, generated and managed tokens, rotation, trigger bursts during builds, and queued requests across reboot. |
 | `lifecycle` | Linux with KVM | Real services, local Git and SSH fixtures, polling, failed builds, permissions, GC roots, and recovery across reboot. |
 | `https-auth` | Linux with KVM | TLS Git authentication, missing or incorrect credentials, rotation, redirect rejection, and secret leakage checks. |
 | `readiness` | Linux with KVM | Delayed readiness, pending activation with rollback disabled, offline retry, redirects, timeouts, and manual restarts. |
@@ -60,7 +61,7 @@ On supported macOS or Linux with Nix, Git, and Python 3 available:
 
 ```sh
 cargo build
-python3 tests/local-smoke.py target/debug/nixploy
+python3 tests/local-smoke.py target/debug/nixploy-worker
 ```
 
 Python 3 is an additional prerequisite for this script; it is not included in the

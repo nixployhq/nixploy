@@ -12,6 +12,8 @@ Options live under `services.nixploy.apps.<name>`.
 | `package` | `"default"` | Name under `packages.<host-system>`, not a full attribute path. |
 | `executable` | Required | Binary name in the package's `bin/`, not a path or command. |
 | `pollInterval` | `"1min"` | Delay after an attempt completes; positive integer with `s`, `min`, `h`, or `d`. |
+| `webhook.enable` | `false` | Enable authenticated `POST /hooks/<name>` triggers. Polling remains enabled. |
+| `webhook.tokenFile` | `null` | Runtime token file; null generates a persistent token on the host. |
 | `git.https.username` | `null` | HTTPS username expected by your Git provider; required with `tokenFile`. |
 | `git.https.tokenFile` | `null` | Absolute string path to a file containing an HTTPS access token. |
 | `git.privateKeyFile` | `null` | Existing SSH private key, as an absolute string path. |
@@ -39,3 +41,8 @@ Package names allow letters, digits, `_`, `+`, and `-`; executable names also
 allow dots, except `.` and `..`.
 
 See [endpoints](endpoints.md), [repository authentication](authentication.md), and [readiness and rollback](readiness.md) for usage examples.
+
+Shared receiver options live under `services.nixploy.webhook`: `listenAddress`
+defaults to `"127.0.0.1"` and `port` to `9070`. The receiver starts when at least
+one enabled app enables its webhook. See [Webhook triggers](webhooks.md) for
+token management, HTTPS exposure, and CI examples.
