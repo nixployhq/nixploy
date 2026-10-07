@@ -21,12 +21,18 @@ reclaim unreferenced outputs. Keep application data in its own directory.
 Use `nixploy --help` to discover commands and append `--help` at any level:
 
 ```sh
+nixploy app list
 nixploy app retry --help
 nixploy deploy-hook token --help
 sudo nixploy app retry my-app
 sudo nixploy deploy-hook token show my-app
 sudo nixploy deploy-hook token rotate my-app
 ```
+
+`app list` prints enabled apps from the applied NixOS configuration, sorted by
+name with one name per line. It needs no sudo and prints nothing when no apps are
+configured. The list describes configuration, not whether an app is running;
+disabled or removed apps are excluded even if their deployment state remains.
 
 Commands take the app name from `services.nixploy.apps`, rather than a configuration
 file path. Retry schedules the updater and returns without waiting for deployment.
