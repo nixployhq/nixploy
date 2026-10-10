@@ -117,6 +117,10 @@ restarts the app's systemd service when the package is ready. Fetch or build
 failures leave the running app untouched. An unchanged commit and configuration
 do not restart it.
 
+Failed builds are recorded persistently and skipped on subsequent polls until
+the commit or configuration changes. Use `sudo nixploy app retry my-app` to retry
+the same build after resolving the failure.
+
 Each app has its own service user. You can use standard NixOS configuration for
 persistent data, secrets, reverse proxies, and remote builders.
 

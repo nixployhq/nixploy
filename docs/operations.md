@@ -99,6 +99,13 @@ capability also requires an appropriate `AmbientCapabilities` setting.
   can trigger deployment of the same commit with the new settings.
 - Fetch and build failures leave the running release untouched. Failed activation
   triggers rollback when enabled; otherwise it remains pending for retry.
+- A failed build is saved in `state.json` as `failed_build`, including its commit,
+  configuration, and error summary. Later polls and webhooks skip the same commit
+  and configuration, including after a reboot. A new commit or changed configuration
+  allows another build. Run `sudo nixploy app retry my-app` to retry explicitly.
+  This also applies to failures fetching the resolved commit or downloading build
+  inputs, so transient failures during a build require a retry too. Branch lookup
+  failures remain retryable on each poll because no commit has been selected yet.
 - The selected release starts again after reboot. Package roots protect active
   and pending releases, rollback targets, and the latest failed release from Nix
   garbage collection.

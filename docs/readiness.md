@@ -39,6 +39,12 @@ certificates; redirects are not followed and proxy environment variables are ign
 
 ## Rollback and retry
 
+Build failures are tracked separately as `failed_build` in `state.json`, regardless
+of the rollback setting. The same commit and configuration will not build again
+until explicitly retried with `sudo nixploy app retry my-app`. A new commit or
+changed configuration permits another build automatically. The error summary is
+saved with the failure; full build output remains in the updater journal.
+
 Failed readiness fails service startup. With readiness configured, automatic
 rollback is enabled by default. Nixploy restores the previous successful package,
 restarts it, and requires its startup checks to pass. The update command still

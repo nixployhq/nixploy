@@ -159,7 +159,7 @@ fn unchanged_revision_is_noop_and_second_commit_deploys() {
 }
 
 #[test]
-fn fetch_and_build_failure_preserve_running_release_and_retry() {
+fn fetch_and_build_failure_preserve_running_release_and_explicit_retry() {
     let mut f = Fixture::new();
     f.run().unwrap();
     let previous = f.profile();
@@ -173,8 +173,84 @@ fn fetch_and_build_failure_preserve_running_release_and_retry() {
     assert_eq!(f.fake.restarts, 1);
     assert_eq!(f.state().active.unwrap().revision, "a".repeat(40));
     f.fake.build_failure = false;
+    // Each invocation reloads durable state, just like a fresh polling worker.
+    f.run().unwrap();
+    assert_eq!(f.fake.builds.len(), 2);
+    assert_eq!(f.fake.restarts, 1);
+    request_retry(&f.config, &f.path).unwrap();
     f.run().unwrap();
     assert_eq!(f.fake.restarts, 2);
+}
+
+#[test]
+fn failed_build_is_suppressed_until_revision_configuration_or_explicit_retry_changes() {
+    for trigger in ["revision", "configuration", "retry"] {
+        let mut f = Fixture::new();
+        f.fake.build_failure = true;
+        assert!(f.run().is_err());
+        let failure = f.state().failed_build.unwrap();
+        assert_eq!(failure.revision, "a".repeat(40));
+        assert_eq!(failure.configuration, f.config);
+        assert_eq!(failure.error, "build failed");
+        for _ in 0..3 {
+            f.run().unwrap();
+        }
+        assert_eq!(f.fake.builds.len(), 1, "{trigger}");
+        assert_eq!(f.fake.restarts, 0);
+        match trigger {
+            "revision" => f.next(),
+            "configuration" => {
+                f.config.generation = "2".into();
+                fs::write(&f.path, serde_json::to_vec(&f.config).unwrap()).unwrap();
+            }
+            "retry" => request_retry(&f.config, &f.path).unwrap(),
+            _ => unreachable!(),
+        }
+        // A second failed attempt must also be suppressed.
+        assert!(f.run().is_err());
+        f.run().unwrap();
+        assert_eq!(f.fake.builds.len(), 2, "{trigger}");
+        request_retry(&f.config, &f.path).unwrap();
+        f.fake.build_failure = false;
+        f.run().unwrap();
+        assert_eq!(f.fake.builds.len(), 3, "{trigger}");
+        assert_eq!(f.fake.restarts, 1);
+        assert!(f.state().failed_build.is_none());
+    }
+}
+
+#[test]
+fn successful_new_build_clears_old_build_failure_before_activation_retry() {
+    let mut f = Fixture::new();
+    f.enable_rollback();
+    f.fake.build_failure = true;
+    assert!(f.run().is_err());
+    f.next();
+    f.fake.build_failure = false;
+    f.fake.restart_failure = true;
+    assert!(f.run().is_err());
+    assert!(f.state().failed_build.is_none());
+    assert!(f.state().failed.is_some());
+    request_retry(&f.config, &f.path).unwrap();
+    f.fake.restart_failure = false;
+    f.run().unwrap();
+    assert!(f.state().failed.is_none());
+    assert_eq!(f.fake.builds.len(), 2);
+    assert_eq!(f.state().active.unwrap().revision, "b".repeat(40));
+}
+
+#[test]
+fn branch_lookup_failures_remain_retryable_without_recording_a_build_failure() {
+    let mut f = Fixture::new();
+    f.fake.resolve_failure = true;
+    for _ in 0..3 {
+        assert!(f.run().is_err());
+        assert!(f.state().failed_build.is_none());
+    }
+    assert!(f.fake.builds.is_empty());
+    f.fake.resolve_failure = false;
+    f.run().unwrap();
+    assert_eq!(f.fake.builds.len(), 1);
 }
 
 #[test]
@@ -420,6 +496,7 @@ fn old_state_without_rollback_fields_remains_readable() {
     let mut state = serde_json::to_value(f.state()).unwrap();
     state.as_object_mut().unwrap().remove("failed");
     state.as_object_mut().unwrap().remove("recovery");
+    state.as_object_mut().unwrap().remove("failed_build");
     state["active"]["configuration"]
         .as_object_mut()
         .unwrap()
@@ -432,6 +509,7 @@ fn old_state_without_rollback_fields_remains_readable() {
     assert!(!f.state().active.unwrap().configuration.rollback);
     assert!(f.state().recovery.is_none());
     assert!(f.state().failed.is_none());
+    assert!(f.state().failed_build.is_none());
 }
 
 #[test]

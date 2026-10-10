@@ -97,7 +97,18 @@ pub struct State {
     #[serde(default)]
     pub failed: Option<Release>,
     #[serde(default)]
+    pub failed_build: Option<BuildFailure>,
+    #[serde(default)]
     pub recovery: Option<Recovery>,
+}
+
+/// A rejected build has no output to retain or activate.
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct BuildFailure {
+    pub revision: String,
+    pub configuration: Config,
+    pub error: String,
 }
 
 /// Persist the recovery decision before changing the profile or stopping a service.
@@ -158,6 +169,10 @@ pub fn deploy(cfg: &Config, config_path: &Path, backend: &mut impl Backend) -> R
         .failed
         .as_ref()
         .is_some_and(|release| release.matches(cfg, &revision))
+        || state
+            .failed_build
+            .as_ref()
+            .is_some_and(|failure| failure.configuration == *cfg && failure.revision == revision)
     {
         if let Some(error) = recovery_error {
             return Err(error);
@@ -186,12 +201,28 @@ pub fn deploy(cfg: &Config, config_path: &Path, backend: &mut impl Backend) -> R
     }
 
     eprintln!("{}: building revision {}", cfg.app, revision);
-    let output = backend.build(&revision)?;
+    let output = match backend.build(&revision) {
+        Ok(output) => output,
+        Err(error) => {
+            state.failed_build = Some(BuildFailure {
+                revision,
+                configuration: cfg.clone(),
+                error: format!("{error:#}"),
+            });
+            save_state(dir, &state).context("saving build failure")?;
+            return Err(error.context(
+                "build failed; revision suppressed until explicit retry or configuration change",
+            ));
+        }
+    };
     let release = Release {
         revision,
         configuration: cfg.clone(),
         output,
     };
+    if state.failed_build.take().is_some() {
+        save_state(dir, &state)?;
+    }
     activate(cfg, config_path, release, &mut state, backend)
 }
 
@@ -328,6 +359,14 @@ pub fn request_retry(cfg: &Config, config_path: &Path) -> Result<()> {
         state.recovery.is_none(),
         "recovery is still pending; run the updater to finish recovery first"
     );
+    if state
+        .failed_build
+        .as_ref()
+        .is_some_and(|failure| failure.configuration == *cfg)
+    {
+        state.failed_build = None;
+        return save_state(dir, &state);
+    }
     let failed = state
         .failed
         .as_ref()
